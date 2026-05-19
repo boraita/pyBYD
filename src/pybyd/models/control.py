@@ -35,9 +35,9 @@ class RemoteCommand(enum.StrEnum):
     FIND_CAR = "FINDCAR"
     FLASH_LIGHTS = "FLASHLIGHTNOWHISTLE"
     CLOSE_WINDOWS = "CLOSEWINDOW"
-    # Counterpart to CLOSEWINDOW. The exact wire string is the best guess
-    # from the mirror convention BYD uses elsewhere (OPENTRUNK/CLOSETRUNK,
-    # LOCKDOOR/OPENDOOR). To be validated against live cloud response.
+    # Counterpart to CLOSEWINDOW.  Live-verified on Sealion 7: opens
+    # the windows to a ~10 % vent crack (not full-drop).  BYD's native
+    # ventilation flow; no remote full-drop command is known.
     OPEN_WINDOWS = "OPENWINDOW"
     SEAT_CLIMATE = "VENTILATIONHEATING"
     BATTERY_HEAT = "BATTERYHEAT"

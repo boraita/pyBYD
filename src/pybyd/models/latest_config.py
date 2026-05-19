@@ -103,6 +103,7 @@ class VehicleCapabilities(BydBaseModel):
     find_car: bool | None = None
     flash_lights: bool | None = None
     close_windows: bool | None = None
+    open_windows: bool | None = None
     location: bool | None = None
 
     function_nos: list[str] = Field(default_factory=list)
@@ -152,6 +153,7 @@ class VehicleCapabilities(BydBaseModel):
                 "find_car": require(["1007"]),
                 "flash_lights": require(["1008"]),
                 "close_windows": require(["1026"]),
+                "open_windows": require(["1026"]),
                 "location": require(["1014"]),
                 "function_nos": sorted(function_nos),
                 "codes": sorted(normalized_codes),

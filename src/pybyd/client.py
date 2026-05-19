@@ -1309,6 +1309,22 @@ class BydClient:
         pwd = self._require_command_pwd(command_pwd)
         return await self._remote_control(vin, RemoteCommand.CLOSE_WINDOWS, command_pwd=pwd)
 
+    async def open_windows(
+        self,
+        vin: str,
+        *,
+        command_pwd: str | None = None,
+    ) -> RemoteControlResult:
+        """Open all windows fully.
+
+        Binary fire-and-forget. Partial position (vent-mode / N % open)
+        is not supported on this endpoint as far as we know — see
+        ``openWindowSignalLearnInfo`` in latest config for the variant
+        flag that might gate it; capture BYD app traffic to confirm.
+        """
+        pwd = self._require_command_pwd(command_pwd)
+        return await self._remote_control(vin, RemoteCommand.OPEN_WINDOWS, command_pwd=pwd)
+
     async def find_car(
         self,
         vin: str,

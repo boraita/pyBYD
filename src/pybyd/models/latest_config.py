@@ -31,8 +31,12 @@ def registered_latest_config_function_nos() -> frozenset[str]:
             "1003",  # ventilation/heating (parent)
             "1004",  # tire pressure (parent)
             "1014",  # location
-            "1030",  # one-tap prep (parent)
-            "1031",  # one-click shutdown
+            # 1030 / 1031 advertise the BYD app's "one-tap" feature, which
+            # is a *scheduled* departure pre-conditioning flow (BOOKINGAIR
+            # under the hood), not an instant command. Tracked so they don't
+            # show up as unknown function_nos; no separate capability flag.
+            "1030",
+            "1031",
             "10020001",  # sunroof
             "10020002",  # hood
             "10020003",  # trunk
@@ -108,8 +112,6 @@ class VehicleCapabilities(BydBaseModel):
     location: bool | None = None
     open_trunk: bool | None = None
     close_trunk: bool | None = None
-    one_tap_prep: bool | None = None
-    one_tap_shutdown: bool | None = None
 
     function_nos: list[str] = Field(default_factory=list)
     codes: list[str] = Field(default_factory=list)
@@ -162,8 +164,6 @@ class VehicleCapabilities(BydBaseModel):
                 "location": require(["1014"]),
                 "open_trunk": require(["1020"]),
                 "close_trunk": require(["1021"]),
-                "one_tap_prep": require(["1030"]),
-                "one_tap_shutdown": require(["1031"]),
                 "function_nos": sorted(function_nos),
                 "codes": sorted(normalized_codes),
                 "unknown_function_nos": unknown_function_nos,

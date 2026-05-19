@@ -31,7 +31,6 @@ from pybyd._capabilities.battery_heat import BatteryHeatCapability
 from pybyd._capabilities.finder import FinderCapability
 from pybyd._capabilities.hvac import HvacCapability
 from pybyd._capabilities.lock import LockCapability
-from pybyd._capabilities.one_tap import OneTapCapability
 from pybyd._capabilities.seat import SeatCapability
 from pybyd._capabilities.steering import SteeringCapability
 from pybyd._capabilities.trunk import TrunkCapability
@@ -178,14 +177,6 @@ class BydCar:
             execute_command=self._execute_command,
             open_available=self._capabilities.open_trunk,
             close_available=self._capabilities.close_trunk,
-        )
-        self.one_tap = OneTapCapability(
-            prep_fn=client.one_tap_prep,
-            shutdown_fn=client.one_tap_shutdown,
-            vin=vin,
-            execute_command=self._execute_command,
-            prep_available=self._capabilities.one_tap_prep,
-            shutdown_available=self._capabilities.one_tap_shutdown,
         )
 
     # ------------------------------------------------------------------

@@ -1315,12 +1315,12 @@ class BydClient:
         *,
         command_pwd: str | None = None,
     ) -> RemoteControlResult:
-        """Open all windows fully.
+        """Crack all windows to ~10 % (vent mode).
 
-        Binary fire-and-forget. Partial position (vent-mode / N % open)
-        is not supported on this endpoint as far as we know — see
-        ``openWindowSignalLearnInfo`` in latest config for the variant
-        flag that might gate it; capture BYD app traffic to confirm.
+        Live-verified on Sealion 7 (EU, 2024).  ``OPENWINDOW`` does not
+        fully drop the windows — it opens them to a vent crack of
+        roughly 10 %, BYD's native ventilation behaviour for cooling
+        a sun-baked cabin.  No remote command for a full-drop is known.
         """
         pwd = self._require_command_pwd(command_pwd)
         return await self._remote_control(vin, RemoteCommand.OPEN_WINDOWS, command_pwd=pwd)

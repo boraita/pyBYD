@@ -16,10 +16,12 @@ class WindowsCapability:
     Both directions are fire-and-forget.  No projections are
     registered because window state updates arrive asynchronously.
 
-    Open is binary (all windows fully open) on the standard
-    ``OPENWINDOW`` endpoint.  Partial position / vent-mode is not
-    supported here; see ``openWindowSignalLearnInfo`` in latest config
-    for a variant flag that might gate a separate command.
+    Open behaviour confirmed on Sealion 7 (EU, 2024):  ``OPENWINDOW``
+    cracks the windows to ~10 % (vent mode), **not** 100 %.  This is
+    BYD's native ventilation flow — useful for cooling a sun-baked
+    cabin without committing to fully dropping the glass.  There is
+    no known remote command to fully drop the windows; the physical
+    button switches in the car are the only path for that.
     """
 
     def __init__(
@@ -62,7 +64,11 @@ class WindowsCapability:
         await self._execute(_cmd, [])
 
     async def open(self) -> None:
-        """Open all windows (fully)."""
+        """Crack all windows to ~10 % (vent mode).
+
+        See the class docstring for the live-verified behaviour — this
+        is **not** a full-drop, just BYD's stock ventilation crack.
+        """
         if not self.open_available or self._open_fn is None:
             raise BydEndpointNotSupportedError(
                 f"Open-windows capability not supported for VIN {self._vin}",

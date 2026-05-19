@@ -105,6 +105,18 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
             "requiredFunctionNos": ["1026"],
         }
     ),
+    # Open windows shares the windows feature gate.  If `1026` is present
+    # the car supports both directions on this endpoint as far as we know.
+    # Latest-config also exposes finer-grained signals — `10020005` ("windows"
+    # generic) and `openWindowSignalLearnInfo` — that may distinguish full
+    # vs. ventilation variants once we learn more about them.
+    CommandGateRule.model_validate(
+        {
+            "gateId": "open_windows",
+            "command": RemoteCommand.OPEN_WINDOWS,
+            "requiredFunctionNos": ["1026"],
+        }
+    ),
     CommandGateRule.model_validate(
         {
             "gateId": "open_trunk",

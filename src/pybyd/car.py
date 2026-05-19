@@ -165,9 +165,11 @@ class BydCar:
         )
         self.windows = WindowsCapability(
             close_fn=client.close_windows,
+            open_fn=client.open_windows,
             vin=vin,
             execute_command=self._execute_command,
             close_available=self._capabilities.close_windows,
+            open_available=self._capabilities.open_windows,
         )
         self.trunk = TrunkCapability(
             open_fn=client.open_trunk,

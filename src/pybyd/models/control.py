@@ -37,6 +37,8 @@ class RemoteCommand(enum.StrEnum):
     CLOSE_WINDOWS = "CLOSEWINDOW"
     SEAT_CLIMATE = "VENTILATIONHEATING"
     BATTERY_HEAT = "BATTERYHEAT"
+    OPEN_TRUNK = "OPENTRUNK"
+    CLOSE_TRUNK = "CLOSETRUNK"
     # `START_CHARGE` is a synthetic value (never sent on the wire as a
     # `commandType`).  The on-the-wire smart-charging "start" toggle goes via
     # `/control/smartCharge/changeChargeStatue` with ``status: "1"`` rather

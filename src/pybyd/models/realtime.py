@@ -398,6 +398,12 @@ class VehicleRealtimeData(BydBaseModel):
         "upgrade_status": is_negative,
         # Fuel range: -1 means unavailable (BEV or no data).
         "oil_endurance": is_negative,
+        # EV range / SoC: -1 sentinel on post-wake or deep-sleep payloads.
+        # 0 is intentionally NOT a sentinel — an empty battery is a valid
+        # reading.  We only strip negatives.
+        "endurance_mileage": is_negative,
+        "endurance_mileage_v2": is_negative,
+        "elec_percent": is_negative,
         # Charge rate: large negative sentinels when not charging.
         "rate": lambda v: v is not None and v <= -9,
     }

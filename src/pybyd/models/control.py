@@ -37,6 +37,12 @@ class RemoteCommand(enum.StrEnum):
     CLOSE_WINDOWS = "CLOSEWINDOW"
     SEAT_CLIMATE = "VENTILATIONHEATING"
     BATTERY_HEAT = "BATTERYHEAT"
+    # One-Tap Prep / Shutdown — `commandType` is the best guess from the
+    # Latest Config `code` field; correct payload structure (with or
+    # without controlParams) is TBD pending live testing.  See the
+    # OneTapCapability docstring.
+    ONE_TAP_PREP = "ONETAPPREP"
+    ONE_TAP_SHUTDOWN = "ONECLICKSHUTDOWN"
     # `START_CHARGE` is a synthetic value (never sent on the wire as a
     # `commandType`).  The on-the-wire smart-charging "start" toggle goes via
     # `/control/smartCharge/changeChargeStatue` with ``status: "1"`` rather

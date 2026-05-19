@@ -107,6 +107,20 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
     ),
     CommandGateRule.model_validate(
         {
+            "gateId": "one_tap_prep",
+            "command": RemoteCommand.ONE_TAP_PREP,
+            "requiredFunctionNos": ["1030"],
+        }
+    ),
+    CommandGateRule.model_validate(
+        {
+            "gateId": "one_tap_shutdown",
+            "command": RemoteCommand.ONE_TAP_SHUTDOWN,
+            "requiredFunctionNos": ["1031"],
+        }
+    ),
+    CommandGateRule.model_validate(
+        {
             "gateId": "seat_driver",
             "command": RemoteCommand.SEAT_CLIMATE,
             "requiredFunctionNos": ["10030001", "10030002", "10300003"],

@@ -1319,6 +1319,35 @@ class BydClient:
         pwd = self._require_command_pwd(command_pwd)
         return await self._remote_control(vin, RemoteCommand.FIND_CAR, command_pwd=pwd)
 
+    async def one_tap_prep(
+        self,
+        vin: str,
+        *,
+        command_pwd: str | None = None,
+    ) -> RemoteControlResult:
+        """Start the configured one-tap pre-conditioning profile.
+
+        Maps to ``commandType=ONETAPPREP`` and gated by functionNo
+        ``1030`` in Latest Config.  Sends no ``controlParams`` (see
+        ``one_tap.py`` docstring for the unverified-payload caveat).
+        """
+        pwd = self._require_command_pwd(command_pwd)
+        return await self._remote_control(vin, RemoteCommand.ONE_TAP_PREP, command_pwd=pwd)
+
+    async def one_tap_shutdown(
+        self,
+        vin: str,
+        *,
+        command_pwd: str | None = None,
+    ) -> RemoteControlResult:
+        """Shut down any active one-tap pre-conditioning.
+
+        Maps to ``commandType=ONECLICKSHUTDOWN`` and gated by functionNo
+        ``1031`` in Latest Config.
+        """
+        pwd = self._require_command_pwd(command_pwd)
+        return await self._remote_control(vin, RemoteCommand.ONE_TAP_SHUTDOWN, command_pwd=pwd)
+
     async def schedule_climate(
         self,
         vin: str,

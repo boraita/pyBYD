@@ -1309,6 +1309,22 @@ class BydClient:
         pwd = self._require_command_pwd(command_pwd)
         return await self._remote_control(vin, RemoteCommand.CLOSE_WINDOWS, command_pwd=pwd)
 
+    async def open_windows(
+        self,
+        vin: str,
+        *,
+        command_pwd: str | None = None,
+    ) -> RemoteControlResult:
+        """Crack all windows to ~10 % (vent mode).
+
+        Live-verified on Sealion 7 (EU, 2024).  ``OPENWINDOW`` does not
+        fully drop the windows — it opens them to a vent crack of
+        roughly 10 %, BYD's native ventilation behaviour for cooling
+        a sun-baked cabin.  No remote command for a full-drop is known.
+        """
+        pwd = self._require_command_pwd(command_pwd)
+        return await self._remote_control(vin, RemoteCommand.OPEN_WINDOWS, command_pwd=pwd)
+
     async def find_car(
         self,
         vin: str,

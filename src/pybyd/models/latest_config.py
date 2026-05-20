@@ -103,6 +103,7 @@ class VehicleCapabilities(BydBaseModel):
     find_car: bool | None = None
     flash_lights: bool | None = None
     close_windows: bool | None = None
+    open_windows: bool | None = None
     location: bool | None = None
     open_trunk: bool | None = None
     close_trunk: bool | None = None
@@ -154,6 +155,7 @@ class VehicleCapabilities(BydBaseModel):
                 "find_car": require(["1007"]),
                 "flash_lights": require(["1008"]),
                 "close_windows": require(["1026"]),
+                "open_windows": require(["1026"]),
                 "location": require(["1014"]),
                 "open_trunk": require(["1020"]),
                 "close_trunk": require(["1021"]),

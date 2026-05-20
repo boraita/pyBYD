@@ -1319,6 +1319,34 @@ class BydClient:
         pwd = self._require_command_pwd(command_pwd)
         return await self._remote_control(vin, RemoteCommand.FIND_CAR, command_pwd=pwd)
 
+    async def open_trunk(
+        self,
+        vin: str,
+        *,
+        command_pwd: str | None = None,
+    ) -> RemoteControlResult:
+        """Open (release) the trunk remotely.
+
+        Maps to ``commandType=OPENTRUNK`` and gated by functionNo ``1020``
+        (code ``OPENTRUNK``) in Latest Config.
+        """
+        pwd = self._require_command_pwd(command_pwd)
+        return await self._remote_control(vin, RemoteCommand.OPEN_TRUNK, command_pwd=pwd)
+
+    async def close_trunk(
+        self,
+        vin: str,
+        *,
+        command_pwd: str | None = None,
+    ) -> RemoteControlResult:
+        """Close (lower) the trunk remotely.
+
+        Maps to ``commandType=CLOSETRUNK`` and gated by functionNo ``1021``
+        (code ``CLOSETRUNK``) in Latest Config.
+        """
+        pwd = self._require_command_pwd(command_pwd)
+        return await self._remote_control(vin, RemoteCommand.CLOSE_TRUNK, command_pwd=pwd)
+
     async def schedule_climate(
         self,
         vin: str,

@@ -33,6 +33,7 @@ from pybyd._capabilities.hvac import HvacCapability
 from pybyd._capabilities.lock import LockCapability
 from pybyd._capabilities.seat import SeatCapability
 from pybyd._capabilities.steering import SteeringCapability
+from pybyd._capabilities.trunk import TrunkCapability
 from pybyd._capabilities.windows import WindowsCapability
 from pybyd._state_engine import ProjectionSpec, VehicleSnapshot, VehicleStateEngine
 from pybyd.exceptions import BydRemoteControlError
@@ -166,6 +167,14 @@ class BydCar:
             vin=vin,
             execute_command=self._execute_command,
             close_available=self._capabilities.close_windows,
+        )
+        self.trunk = TrunkCapability(
+            open_fn=client.open_trunk,
+            close_fn=client.close_trunk,
+            vin=vin,
+            execute_command=self._execute_command,
+            open_available=self._capabilities.open_trunk,
+            close_available=self._capabilities.close_trunk,
         )
 
     # ------------------------------------------------------------------

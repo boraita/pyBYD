@@ -156,7 +156,7 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
         {
             "gateId": "battery_heat",
             "command": RemoteCommand.BATTERY_HEAT,
-            "requiredFunctionNos": ["10300002"],
+            "requiredFunctionNos": ["10300002", "1010", "10100001", "10100002"],
         }
     ),
     CommandGateRule.model_validate(
@@ -166,6 +166,13 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
             # Cars without it can't accept ``/control/smartCharge/*`` calls.
             "gateId": "start_charge",
             "command": RemoteCommand.START_CHARGE,
+            "requiredFunctionNos": ["1012"],
+        }
+    ),
+    CommandGateRule.model_validate(
+        {
+            "gateId": "stop_charge",
+            "command": RemoteCommand.STOP_CHARGE,
             "requiredFunctionNos": ["1012"],
         }
     ),

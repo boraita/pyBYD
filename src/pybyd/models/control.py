@@ -50,6 +50,7 @@ class RemoteCommand(enum.StrEnum):
     # table can express the `functionNo` requirement (``1012``) for callers
     # that introspect command availability.
     START_CHARGE = "SMARTCHARGESTART"
+    STOP_CHARGE = "SMARTCHARGESTOP"
 
 
 class ControlState(enum.IntEnum):

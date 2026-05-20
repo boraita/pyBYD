@@ -247,6 +247,10 @@ class BydCar:
         """
         return await self._client.start_charging(self._vin)
 
+    async def stop_charging(self) -> ChargeChangeResult:
+        """Stop charging immediately and wait for the toggle to settle."""
+        return await self._client.stop_charging(self._vin)
+
     async def update_energy(self) -> EnergyConsumption:
         """Fetch fresh energy consumption data and merge into state engine."""
         data = await self._client.get_energy_consumption(self._vin)

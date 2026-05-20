@@ -87,6 +87,12 @@ def parse_byd_timestamp(value: Any) -> datetime | None:
         ts = int(value)
     except (TypeError, ValueError):
         return None
+    # 0 and negative epochs are sentinels meaning "no value", not literal
+    # epoch-zero (1970-01-01).  The GPS endpoint returns `gpsTimeStamp=0`
+    # while the satellite fix is stale; without this guard the timestamp
+    # surfaces as 1970-01-01 in HA which is worse than `unknown`.
+    if ts <= 0:
+        return None
     if ts >= _MS_THRESHOLD:
         ts = ts // 1000
     return datetime.fromtimestamp(ts, tz=UTC)

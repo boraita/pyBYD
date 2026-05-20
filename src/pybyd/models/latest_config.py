@@ -170,7 +170,7 @@ class VehicleCapabilities(BydBaseModel):
                 "unlock": require(["1006"]),
                 "climate": require(["1001", "10300001"]),
                 "car_on": require(["1001", "10300001"]),
-                "battery_heat": require(["10300002"]),
+                "battery_heat": require(["10300002", "1010", "10100001", "10100002"]),
                 "steering_wheel_heat": require(["10030010", "10300004"]),
                 "driver_seat_heat": require(["10030002", "10300003"]),
                 "driver_seat_ventilation": require(["10030001", "10300003"]),

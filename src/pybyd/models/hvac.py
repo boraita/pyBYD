@@ -80,6 +80,7 @@ class HvacStatus(BydBaseModel):
 
     _SENTINEL_RULES: ClassVar[dict[str, Callable[..., bool]]] = {
         "temp_in_car": is_temp_sentinel,
+        "temp_out_car": is_temp_sentinel,
     }
 
     # --- A/C state ---

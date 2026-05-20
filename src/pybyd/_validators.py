@@ -47,6 +47,7 @@ from collections.abc import Callable
 from typing import Any
 
 from pybyd.models.gps import GpsInfo
+from pybyd.models.hvac import HvacStatus
 from pybyd.models.realtime import VehicleRealtimeData
 
 _GPS_NULL_ISLAND_THRESHOLD: float = 0.1
@@ -226,3 +227,44 @@ def apply_gps_filters(
 ) -> GpsInfo | None:
     """Apply all GPS filtering rules in one place."""
     return guard_gps_coordinates(previous, incoming)
+
+
+_HVAC_SENSOR_PLACEHOLDER_FIELDS: tuple[str, ...] = (
+    "temp_in_car",
+    "temp_out_car",
+    "pm",
+)
+
+
+def apply_hvac_filters(
+    previous: HvacStatus | None,
+    incoming: HvacStatus,
+) -> HvacStatus:
+    """Drop the all-zero-sensor placeholder HVAC payload.
+
+    BYD's HVAC HTTP endpoint occasionally returns a payload where every
+    sensor-population field (``temp_in_car``, ``temp_out_car``, ``pm``)
+    reads 0 simultaneously — a placeholder, not real data.  When detected,
+    pin those three fields to their previous values.  Setpoints / state
+    enums on the same payload still update.
+
+    A genuine 0 °C reading on one of the sensors round-trips intact as
+    long as the same payload carries any other real sensor value (which
+    real payloads always do).
+    """
+    if previous is None:
+        return incoming
+    all_zero_or_missing = all(
+        getattr(incoming, field, None) in (None, 0, 0.0)
+        for field in _HVAC_SENSOR_PLACEHOLDER_FIELDS
+    )
+    if not all_zero_or_missing:
+        return incoming
+    updates: dict[str, Any] = {}
+    for field in _HVAC_SENSOR_PLACEHOLDER_FIELDS:
+        prev_value = getattr(previous, field, None)
+        if prev_value is not None:
+            updates[field] = prev_value
+    if not updates:
+        return incoming
+    return incoming.model_copy(update=updates)

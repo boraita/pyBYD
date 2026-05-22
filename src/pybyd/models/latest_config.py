@@ -30,18 +30,33 @@ def registered_latest_config_function_nos() -> frozenset[str]:
             "1002",  # door/window (parent)
             "1003",  # ventilation/heating (parent)
             "1004",  # tire pressure (parent)
+            "1009",  # child presence detection (CPD)
+            "1010",  # battery heating (parent)
+            "10100001",  # battery heating while driving
+            "10100002",  # battery heating while charging
+            "1013",  # NFC digital key (parent)
+            "10130002",  # NFC key 3C
             "1014",  # location
-            # 1030 / 1031 advertise the BYD app's "one-tap" feature, which
-            # is a *scheduled* departure pre-conditioning flow (BOOKINGAIR
-            # under the hood), not an instant command. Tracked so they don't
-            # show up as unknown function_nos; no separate capability flag.
-            "1030",
-            "1031",
+            "1022",  # energy consumption analysis
+            "1023",  # vehicle health (parent for warning lights)
+            "10230001",  # tire pressure system warning
+            "10230002",  # steering system warning
+            "10230003",  # SRS warning
+            "10230004",  # power system warning
+            "10230005",  # power battery warning
+            "10230007",  # ESP warning
+            "10230010",  # charging system warning
+            "10230011",  # braking system warning
+            "10230012",  # ABS warning
+            "1030",  # one-tap prep (parent, advertises BOOKINGAIR feature)
+            "1031",  # one-click shutdown
             "10020001",  # sunroof
             "10020002",  # hood
             "10020003",  # trunk
             "10020004",  # up windows remotely
             "10020005",  # windows
+            "10030007",  # rear left seat heating
+            "10030009",  # rear right seat heating
             "10030011",  # seat rows
             "10040001",  # direct tire pressure
         }
@@ -104,6 +119,10 @@ class VehicleCapabilities(BydBaseModel):
     driver_seat_ventilation: bool | None = None
     passenger_seat_heat: bool | None = None
     passenger_seat_ventilation: bool | None = None
+    rear_left_seat_heat: bool | None = None
+    rear_right_seat_heat: bool | None = None
+    child_presence_detection: bool | None = None
+    nfc_digital_key: bool | None = None
 
     find_car: bool | None = None
     flash_lights: bool | None = None
@@ -151,12 +170,16 @@ class VehicleCapabilities(BydBaseModel):
                 "unlock": require(["1006"]),
                 "climate": require(["1001", "10300001"]),
                 "car_on": require(["1001", "10300001"]),
-                "battery_heat": require(["10300002"]),
+                "battery_heat": require(["10300002", "1010", "10100001", "10100002"]),
                 "steering_wheel_heat": require(["10030010", "10300004"]),
                 "driver_seat_heat": require(["10030002", "10300003"]),
                 "driver_seat_ventilation": require(["10030001", "10300003"]),
                 "passenger_seat_heat": require(["10030005", "10300003"]),
                 "passenger_seat_ventilation": require(["10030004", "10300003"]),
+                "rear_left_seat_heat": require(["10030007"]),
+                "rear_right_seat_heat": require(["10030009"]),
+                "child_presence_detection": require(["1009"]),
+                "nfc_digital_key": require(["1013", "10130002"]),
                 "find_car": require(["1007"]),
                 "flash_lights": require(["1008"]),
                 "close_windows": require(["1026"]),

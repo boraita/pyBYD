@@ -62,6 +62,12 @@ class Vehicle(BydBaseModel):
     yun_active_time: BydTimestamp = None
     empower_id: int | None = None
     range_detail_list: list[EmpowerRange] = Field(default_factory=list)
+    # Per-feature presence/variant flags returned at the top level of
+    # ``getVehicles``.  46 keys observed on a Sealion 7 EU; values look
+    # tri-state: ``0`` absent / ``1`` present / ``-1`` not applicable.
+    # Used by command_gating as a fine-grained second gate alongside
+    # the coarser ``functionNo`` list — see Issue #47.
+    vehicle_fun_learn_info: dict[str, int] = Field(default_factory=dict)
 
     @property
     def is_shared(self) -> bool:

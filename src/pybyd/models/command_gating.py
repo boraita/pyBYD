@@ -25,11 +25,20 @@ if TYPE_CHECKING:
 
 
 class CommandGateRule(BydBaseModel):
-    """Canonical command gate definition."""
+    """Canonical command gate definition.
+
+    ``required_function_nos`` is the coarse gate from ``cfFixedList``.
+    ``required_learn_info_keys`` is the optional finer gate from
+    ``getVehicles.vehicleFunLearnInfo``: when set, at least one listed
+    key must resolve to a positive value (typically ``1``) for the rule
+    to be considered supported.  Rules without ``required_learn_info_keys``
+    skip the second check, preserving the current behaviour.
+    """
 
     gate_id: str
     command: RemoteCommand
     required_function_nos: list[str] = Field(default_factory=list)
+    required_learn_info_keys: list[str] = Field(default_factory=list)
 
 
 class CommandGateVerdict(BydBaseModel):
@@ -41,10 +50,11 @@ class CommandGateVerdict(BydBaseModel):
     reason: str
 
     required_function_nos: list[str] = Field(default_factory=list)
-
     matched_function_nos: list[str] = Field(default_factory=list)
-
     counterpart_function_nos: list[str] = Field(default_factory=list)
+
+    required_learn_info_keys: list[str] = Field(default_factory=list)
+    matched_learn_info_keys: list[str] = Field(default_factory=list)
 
 
 # Canonical command -> functionNo mapping used by both client preflight and reporting.
@@ -105,16 +115,20 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
             "requiredFunctionNos": ["1026"],
         }
     ),
-    # Open windows shares the windows feature gate.  If `1026` is present
-    # the car supports both directions on this endpoint as far as we know.
-    # Latest-config also exposes finer-grained signals — `10020005` ("windows"
-    # generic) and `openWindowSignalLearnInfo` — that may distinguish full
-    # vs. ventilation variants once we learn more about them.
+    # Open windows: ``1026`` from cfFixedList is present on cars that
+    # support either direction, but only a subset can actually OPEN
+    # remotely (others only support CLOSE).  ``openWindowLearnInfo`` /
+    # ``openWindow499LearnInfo`` on ``vehicleFunLearnInfo`` flip to ``1``
+    # only on the open-capable VINs — confirmed live on a Sealion 7 EU
+    # 2024 where both are ``1`` and OPENWINDOW cracks the windows to
+    # ~10 % vent, vs. jkaberg's car where 1026 is present but the
+    # command had no physical effect (Issue #47).
     CommandGateRule.model_validate(
         {
             "gateId": "open_windows",
             "command": RemoteCommand.OPEN_WINDOWS,
             "requiredFunctionNos": ["1026"],
+            "requiredLearnInfoKeys": ["openWindowLearnInfo", "openWindow499LearnInfo"],
         }
     ),
     CommandGateRule.model_validate(
@@ -183,6 +197,20 @@ def _require(function_nos: set[str], required_function_nos: list[str]) -> bool:
     return any(function_no in function_nos for function_no in required_function_nos)
 
 
+def _learn_info_match(
+    learn_info: Mapping[str, int] | None,
+    required_keys: list[str],
+) -> list[str]:
+    """Return the subset of ``required_keys`` that resolve to a positive value.
+
+    A missing key, ``0``, or ``-1`` (BYD's "not applicable") count as
+    not-present.  Only ``> 0`` is treated as confirmed.
+    """
+    if not required_keys or learn_info is None:
+        return []
+    return sorted(key for key in required_keys if (learn_info.get(key) or 0) > 0)
+
+
 def command_gate_rules() -> tuple[CommandGateRule, ...]:
     """Return canonical command gate rules."""
     return _COMMAND_GATE_RULES
@@ -204,15 +232,29 @@ def _evaluate_rule(
     capabilities: VehicleCapabilities,
     *,
     function_nos: set[str],
+    learn_info: Mapping[str, int] | None = None,
 ) -> CommandGateVerdict:
     matched_function_nos = sorted([fn for fn in rule.required_function_nos if fn in function_nos])
-
-    supported = _require(function_nos, rule.required_function_nos)
-    reason = "supported" if supported else "function_no_missing"
-
     counterpart_function_nos = sorted(
         function_no for function_no in rule.required_function_nos if function_no not in matched_function_nos
     )
+
+    fn_supported = _require(function_nos, rule.required_function_nos)
+
+    # Fine gate: only enforced when the rule declares it AND the caller
+    # actually provided a ``learn_info`` mapping.  Rules without
+    # ``required_learn_info_keys`` keep the original function_no-only
+    # contract, so this stays additive.
+    matched_learn_info_keys = _learn_info_match(learn_info, rule.required_learn_info_keys)
+    learn_info_supported = not rule.required_learn_info_keys or learn_info is None or bool(matched_learn_info_keys)
+
+    supported = fn_supported and learn_info_supported
+    if not fn_supported:
+        reason = "function_no_missing"
+    elif not learn_info_supported:
+        reason = "learn_info_missing"
+    else:
+        reason = "supported"
 
     return CommandGateVerdict.model_validate(
         {
@@ -223,14 +265,23 @@ def _evaluate_rule(
             "requiredFunctionNos": rule.required_function_nos,
             "matchedFunctionNos": matched_function_nos,
             "counterpartFunctionNos": counterpart_function_nos,
+            "requiredLearnInfoKeys": rule.required_learn_info_keys,
+            "matchedLearnInfoKeys": matched_learn_info_keys,
         }
     )
 
 
-def evaluate_all_command_gates(capabilities: VehicleCapabilities) -> list[CommandGateVerdict]:
+def evaluate_all_command_gates(
+    capabilities: VehicleCapabilities,
+    *,
+    learn_info: Mapping[str, int] | None = None,
+) -> list[CommandGateVerdict]:
     """Evaluate all canonical gates for reporting and diagnostics."""
     function_nos = set(capabilities.function_nos)
-    return [_evaluate_rule(rule, capabilities, function_nos=function_nos) for rule in _COMMAND_GATE_RULES]
+    return [
+        _evaluate_rule(rule, capabilities, function_nos=function_nos, learn_info=learn_info)
+        for rule in _COMMAND_GATE_RULES
+    ]
 
 
 def evaluate_command_gate(
@@ -238,8 +289,15 @@ def evaluate_command_gate(
     capabilities: VehicleCapabilities,
     *,
     control_params: Mapping[str, object] | None = None,
+    learn_info: Mapping[str, int] | None = None,
 ) -> CommandGateVerdict:
-    """Evaluate preflight support for a command against capabilities/functionNos."""
+    """Evaluate preflight support for a command against capabilities/functionNos.
+
+    ``learn_info`` is the ``vehicleFunLearnInfo`` dict from ``getVehicles``
+    (available on :attr:`pybyd.models.vehicle.Vehicle.vehicle_fun_learn_info`).
+    Optional — rules without ``required_learn_info_keys`` ignore it, so
+    existing callers keep working unchanged.
+    """
     function_nos = set(capabilities.function_nos)
     command_rules = [rule for rule in _COMMAND_GATE_RULES if rule.command == command]
 
@@ -271,7 +329,7 @@ def evaluate_command_gate(
             )
 
         selected_rule = next(rule for rule in command_rules if rule.gate_id == gate_id)
-        return _evaluate_rule(selected_rule, capabilities, function_nos=function_nos)
+        return _evaluate_rule(selected_rule, capabilities, function_nos=function_nos, learn_info=learn_info)
 
     selected = command_rules[0]
-    return _evaluate_rule(selected, capabilities, function_nos=function_nos)
+    return _evaluate_rule(selected, capabilities, function_nos=function_nos, learn_info=learn_info)

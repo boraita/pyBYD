@@ -366,8 +366,20 @@ async def _poll_remote_control_once(
         return parsed
 
     if not serial:
-        _logger.debug("Remote control %s request returned without serial; using immediate result", command.name)
-        return parse_remote_control_result_data(result if isinstance(result, dict) else {})
+        # No serial and the immediate result isn't terminal (checked above):
+        # we can never correlate an ack, so we cannot confirm execution.
+        # Surface this instead of fabricating a tentative-success result.
+        _logger.debug(
+            "Remote control %s returned no serial and no terminal result; "
+            "cannot confirm execution",
+            command.name,
+        )
+        raise BydRemoteControlError(
+            f"Remote control {command.name} could not be confirmed "
+            f"(vehicle returned no request serial)",
+            code="no_serial",
+            endpoint="/control/remoteControl",
+        )
 
     if mqtt_result_waiter is not None:
         try:
@@ -386,6 +398,13 @@ async def _poll_remote_control_once(
                         mqtt_result.success,
                         mqtt_result.control_state,
                     )
+                    if mqtt_result.control_state == 2:
+                        raise BydRemoteControlError(
+                            f"Remote control {command.name} rejected by vehicle "
+                            f"(controlState=2)",
+                            code="2",
+                            endpoint="/control/remoteControl",
+                        )
                     return mqtt_result
             _logger.debug("Remote control %s mqtt_wait returned no result; falling back to polling", command.name)
         except Exception:
@@ -393,6 +412,7 @@ async def _poll_remote_control_once(
 
     # Phase 2: Poll for results
     latest = result
+    reached_terminal = False
     for attempt in range(1, poll_attempts + 1):
         if poll_interval > 0:
             await asyncio.sleep(poll_interval)
@@ -415,6 +435,7 @@ async def _poll_remote_control_once(
                 serial,
             )
             if isinstance(latest, dict) and _is_remote_control_ready(latest):
+                reached_terminal = True
                 break
         except BydSessionExpiredError:
             raise
@@ -442,6 +463,16 @@ async def _poll_remote_control_once(
         raise BydRemoteControlError(
             f"Remote control {command.name} failed: {msg}",
             code="2",
+            endpoint="/control/remoteControlResult",
+        )
+    if not reached_terminal:
+        # Loop exhausted without the cloud ever returning a terminal result —
+        # typically a deep-asleep/offline car. Surface it as a timeout instead
+        # of returning a quiet pending result that callers read as success.
+        raise BydRemoteControlError(
+            f"Remote control {command.name} not confirmed within timeout "
+            f"(vehicle may be asleep or offline)",
+            code="timeout",
             endpoint="/control/remoteControlResult",
         )
     return parsed

@@ -141,6 +141,9 @@ class BydClient:
         self._mqtt_runtime: BydMqttRuntime | None = None
         self._mqtt_waiters: list[_MqttWaiter] = []
         self._mqtt_reauth_at: float = 0.0
+        # Serialises MQTT (re)start so overlapping re-auth / CONNACK-recovery
+        # cycles can't spin up concurrent paho clients (FD-leak amplifier).
+        self._mqtt_lock = asyncio.Lock()
         # CONNACK-refusal recovery state (see _on_mqtt_connack_refused).
         self._mqtt_recovery_attempts: int = 0
         self._mqtt_recovery_last_at: float = 0.0
@@ -432,32 +435,36 @@ class BydClient:
         """Best-effort MQTT startup (failures must not break REST flow)."""
         if not self._config.mqtt_enabled:
             return
-        if self._mqtt_runtime is not None and self._mqtt_runtime.is_running:
-            return
-        session = self._session
-        transport = self._transport
-        loop = self._loop or asyncio.get_running_loop()
-        if session is None or transport is None:
-            return
-        try:
-            bootstrap = await fetch_mqtt_bootstrap(self._config, session, transport)
-            runtime = BydMqttRuntime(
-                loop=loop,
-                decrypt_key_hex=session.content_key(),
-                on_event=self._on_mqtt_event,
-                on_decrypt_error=self._schedule_mqtt_reauth,
-                on_connack_refused=self._on_mqtt_connack_refused,
-                on_connected=self._on_mqtt_connected,
-                keepalive=self._config.mqtt_keepalive,
-                logger=_logger,
-            )
-            # runtime.start() performs blocking I/O (TLS handshake,
-            # TCP connect) so run it in an executor to avoid blocking
-            # the asyncio event loop.
-            await loop.run_in_executor(None, runtime.start, bootstrap)
-            self._mqtt_runtime = runtime
-        except Exception:
-            _logger.debug("MQTT startup failed", exc_info=True)
+        # Serialise (re)start: overlapping re-auth / CONNACK-recovery cycles
+        # must not spin up concurrent paho clients (each one its own FD set).
+        async with self._mqtt_lock:
+            # Re-check inside the lock — a concurrent caller may have finished.
+            if self._mqtt_runtime is not None and self._mqtt_runtime.is_running:
+                return
+            session = self._session
+            transport = self._transport
+            loop = self._loop or asyncio.get_running_loop()
+            if session is None or transport is None:
+                return
+            try:
+                bootstrap = await fetch_mqtt_bootstrap(self._config, session, transport)
+                runtime = BydMqttRuntime(
+                    loop=loop,
+                    decrypt_key_hex=session.content_key(),
+                    on_event=self._on_mqtt_event,
+                    on_decrypt_error=self._schedule_mqtt_reauth,
+                    on_connack_refused=self._on_mqtt_connack_refused,
+                    on_connected=self._on_mqtt_connected,
+                    keepalive=self._config.mqtt_keepalive,
+                    logger=_logger,
+                )
+                # runtime.start() performs blocking I/O (TLS handshake,
+                # TCP connect) so run it in an executor to avoid blocking
+                # the asyncio event loop.
+                await loop.run_in_executor(None, runtime.start, bootstrap)
+                self._mqtt_runtime = runtime
+            except Exception:
+                _logger.debug("MQTT startup failed", exc_info=True)
 
     def _stop_mqtt(self) -> None:
         runtime = self._mqtt_runtime

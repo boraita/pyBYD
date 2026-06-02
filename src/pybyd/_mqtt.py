@@ -298,9 +298,23 @@ class BydMqttRuntime:
         if client is None:
             return
         try:
-            if was_running:
-                self._logger.debug("MQTT disconnect requested")
-                client.disconnect()
+            # Request a graceful DISCONNECT unconditionally — even a refused /
+            # never-acked connection can hold a half-open socket.
+            self._logger.debug("MQTT disconnect requested")
+            client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
         finally:
             client.loop_stop()
-            self._logger.debug("MQTT network loop stopped")
+            # paho's disconnect()/loop_stop() do NOT deterministically close
+            # the TLS socket — it is otherwise only reclaimed at GC (__del__).
+            # Under frequent restarts (re-auth, CONNACK recovery) that leaks
+            # file descriptors and eventually kills HA Core ([Errno 24]). Force
+            # the TLS socket + the loop_start self-pipe closed right now.
+            with contextlib.suppress(Exception):
+                client._reset_sockets()  # closes _sock (TLS) + socketpair
+            with contextlib.suppress(Exception):
+                sock = client.socket()
+                if sock is not None:
+                    sock.close()
+            self._logger.debug("MQTT network loop stopped (sockets released)")

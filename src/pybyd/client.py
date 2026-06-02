@@ -1137,9 +1137,17 @@ class BydClient:
         """Fetch push notification state."""
         return await self._authed_call(_push_api.fetch_push_state, vin)
 
-    async def set_push_state(self, vin: str, *, enable: bool) -> CommandAck:
-        """Enable or disable push notifications."""
-        return await self._authed_call(_push_api.set_push_state, vin, enable=enable)
+    async def set_push_state(
+        self, vin: str, *, enable: bool, push_type: int = 701
+    ) -> CommandAck:
+        """Enable/disable a per-type push notification switch.
+
+        Defaults to the vehicle status push (type 701). NOTE: returns
+        code=1001 (not supported) on the Sealion 7 EU.
+        """
+        return await self._authed_call(
+            _push_api.set_push_state, vin, enable=enable, push_type=push_type
+        )
 
     # ------------------------------------------------------------------
     # Control commands

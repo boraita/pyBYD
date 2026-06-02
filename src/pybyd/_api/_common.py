@@ -24,7 +24,9 @@ from pybyd._transport import Transport
 from pybyd.config import BydConfig
 from pybyd.exceptions import (
     BydApiError,
+    BydDataUnavailableError,
     BydEndpointNotSupportedError,
+    BydServiceBusyError,
     BydSessionExpiredError,
 )
 from pybyd.session import Session
@@ -33,6 +35,12 @@ _logger = logging.getLogger(__name__)
 
 #: API error codes indicating the endpoint is not supported for this vehicle.
 ENDPOINT_NOT_SUPPORTED_CODES: frozenset[str] = frozenset({"1001"})
+
+#: Backend busy / soft rate-limit — recoverable, callers should back off.
+SERVICE_BUSY_CODES: frozenset[str] = frozenset({"1008"})
+
+#: Vehicle temporarily unreachable (deep sleep / offline) — retain last value.
+VEHICLE_UNREACHABLE_CODES: frozenset[str] = frozenset({"6002"})
 
 
 def build_inner_base(
@@ -100,6 +108,19 @@ def _raise_for_code(
                     code=code,
                     endpoint=endpoint,
                 )
+    # Default mappings applied to EVERY endpoint (after per-call overrides).
+    if code in SERVICE_BUSY_CODES:
+        raise BydServiceBusyError(
+            f"{endpoint} failed: code={code} message={message}",
+            code=code,
+            endpoint=endpoint,
+        )
+    if code in VEHICLE_UNREACHABLE_CODES:
+        raise BydDataUnavailableError(
+            f"{endpoint} failed: code={code} message={message}",
+            code=code,
+            endpoint=endpoint,
+        )
     raise BydApiError(
         f"{endpoint} failed: code={code} message={message}",
         code=code,

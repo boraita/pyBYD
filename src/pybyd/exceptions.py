@@ -107,3 +107,16 @@ class BydRateLimitError(BydApiError):
     This is raised when the server returns code 6024 after exhausting
     all automatic retry attempts.
     """
+
+
+class BydServiceBusyError(BydApiError):
+    """Backend busy / soft rate-limit (code 1008, "Error de servicio").
+
+    The dominant transient failure on EU cars: the cloud returns ``1008``
+    for realtime/GPS/charging reads when it is overloaded or the car is
+    deep-asleep and the backend gives up. It is recoverable — consumers
+    should retain last-known data and BACK OFF (lengthen the poll
+    interval) rather than hammer, since bursts of ``1008`` mean the
+    backend wants fewer requests. Subclasses :class:`BydApiError` so
+    existing recoverable-error handling keeps working unchanged.
+    """

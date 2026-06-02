@@ -291,7 +291,6 @@ class BydMqttRuntime:
         """Stop and disconnect current MQTT client if running."""
         client = self._client
         self._client = None
-        was_running = self._running
         self._running = False
         self._topic = None
 

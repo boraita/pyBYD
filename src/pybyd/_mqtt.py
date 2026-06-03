@@ -222,6 +222,8 @@ class BydMqttRuntime:
             if self._topic:
                 self._logger.debug("MQTT subscribe topic=%s", self._topic)
                 c.subscribe(self._topic, qos=0)
+            # Notify (on the asyncio loop) that the push channel is up —
+            # fires on first connect and on every paho auto-reconnect.
             if self._on_connected is not None:
                 with contextlib.suppress(RuntimeError):
                     self._loop.call_soon_threadsafe(self._on_connected)
@@ -307,9 +309,11 @@ class BydMqttRuntime:
             client.loop_stop()
             # paho's disconnect()/loop_stop() do NOT deterministically close
             # the TLS socket — it is otherwise only reclaimed at GC (__del__).
-            # Under frequent restarts (re-auth, CONNACK recovery) that leaks
-            # file descriptors and eventually kills HA Core ([Errno 24]). Force
-            # the TLS socket + the loop_start self-pipe closed right now.
+            # Under frequent restarts (re-auth on session expiry / token
+            # invalidation, key-refresh, CONNACK recovery) the leaked file
+            # descriptors accumulate and can eventually exhaust the host's FD
+            # limit ([Errno 24]), taking the process down. Force the TLS socket
+            # + the loop_start self-pipe closed right now.
             with contextlib.suppress(Exception):
                 client._reset_sockets()  # closes _sock (TLS) + socketpair
             with contextlib.suppress(Exception):

@@ -129,6 +129,7 @@ class BydClient:
         on_mqtt_event: Callable[[str, str, dict[str, Any]], None] | None = None,
         on_command_ack: Callable[[CommandAckEvent], None] | None = None,
         on_command_lifecycle: Callable[[CommandLifecycleEvent], None] | None = None,
+        on_mqtt_connect: Callable[[], None] | None = None,
         command_ack_ttl_seconds: float = 300.0,
     ) -> None:
         self._config = config
@@ -151,6 +152,7 @@ class BydClient:
         self._on_mqtt_event_cb = on_mqtt_event
         self._on_command_ack_cb = on_command_ack
         self._on_command_lifecycle_cb = on_command_lifecycle
+        self._on_mqtt_connect_cb = on_mqtt_connect
         self._command_ack_ttl_seconds = command_ack_ttl_seconds if command_ack_ttl_seconds > 0 else 300.0
         self._pending_commands: dict[tuple[str, str], _PendingCommand] = {}
         self._pending_matched_count = 0
@@ -988,6 +990,26 @@ class BydClient:
             return cached.energy_type
         return EnergyType.EV
 
+    async def _vehicle_fun_learn_info_for(self, vin: str) -> dict[str, int] | None:
+        """Return ``vehicleFunLearnInfo`` for a VIN, or ``None`` if unavailable.
+
+        Reads from the vehicle-metadata cache populated by
+        :meth:`get_vehicles`; lazily refreshes on a first-time miss.
+        Returning ``None`` lets command gate evaluation skip the fine
+        learn_info check rather than block on missing data.
+        """
+        cached = self._vehicle_metadata_by_vin.get(vin)
+        if cached is None:
+            try:
+                await self.get_vehicles()
+            except Exception:
+                _logger.debug("get_vehicles failed while resolving learn_info for vin=%s", vin, exc_info=True)
+                return None
+            cached = self._vehicle_metadata_by_vin.get(vin)
+        if cached is None:
+            return None
+        return dict(cached.vehicle_fun_learn_info) or None
+
     async def get_car(
         self,
         vin: str,
@@ -1297,7 +1319,8 @@ class BydClient:
             else:
                 params_dict = dict(control_params)
 
-        gate = evaluate_command_gate(command, capabilities, control_params=params_dict)
+        learn_info = await self._vehicle_fun_learn_info_for(vin)
+        gate = evaluate_command_gate(command, capabilities, control_params=params_dict, learn_info=learn_info)
         if not gate.supported:
             raise BydEndpointNotSupportedError(
                 (f"Remote command {command.value} blocked for VIN {vin}: gate={gate.gate_id} reason={gate.reason}"),
@@ -1536,7 +1559,8 @@ class BydClient:
         timeout.
         """
         capabilities = await self.get_vehicle_capabilities(vin)
-        gate = evaluate_command_gate(RemoteCommand.START_CHARGE, capabilities)
+        learn_info = await self._vehicle_fun_learn_info_for(vin)
+        gate = evaluate_command_gate(RemoteCommand.START_CHARGE, capabilities, learn_info=learn_info)
         if not gate.supported:
             raise BydEndpointNotSupportedError(
                 (f"save_charging_schedule blocked for VIN {vin}: " f"gate={gate.gate_id} reason={gate.reason}"),
@@ -1610,7 +1634,8 @@ class BydClient:
         result within the polling window.
         """
         capabilities = await self.get_vehicle_capabilities(vin)
-        gate = evaluate_command_gate(RemoteCommand.START_CHARGE, capabilities)
+        learn_info = await self._vehicle_fun_learn_info_for(vin)
+        gate = evaluate_command_gate(RemoteCommand.START_CHARGE, capabilities, learn_info=learn_info)
         if not gate.supported:
             raise BydEndpointNotSupportedError(
                 (f"start_charging blocked for VIN {vin}: " f"gate={gate.gate_id} reason={gate.reason}"),

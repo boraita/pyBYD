@@ -84,17 +84,17 @@ class HvacStatus(BydBaseModel):
     }
 
     # --- A/C state ---
-    ac_switch: AcSwitch | int | None = None
+    ac_switch: AcSwitch | None = None
     """A/C switch state."""
-    status: HvacOverallStatus | int | None = None
+    status: HvacOverallStatus | None = None
     """Overall HVAC status."""
-    air_conditioning_mode: AirConditioningMode | int | None = None
+    air_conditioning_mode: AirConditioningMode | None = None
     """A/C mode (auto / manual)."""
-    wind_mode: HvacWindMode | int | None = None
+    wind_mode: HvacWindMode | None = None
     """Fan mode / airflow direction."""
-    wind_position: HvacWindPosition | int | None = None
+    wind_position: HvacWindPosition | None = None
     """Fan speed / airflow position."""
-    cycle_choice: AirCirculationMode | int | None = None
+    cycle_choice: AirCirculationMode | None = None
     """Air circulation mode (external / internal)."""
 
     # --- Temperature ---

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from pybyd._capabilities.battery_heat import BatteryHeatCapability
@@ -87,6 +87,9 @@ class BydCar:
     ) -> None:
         self._client = client
         self._vin = vin
+        # Strong refs to in-flight MQTT handler tasks: without them the
+        # event loop may GC a pending task and silently drop the push.
+        self._mqtt_tasks: set[asyncio.Task[None]] = set()
 
         self._engine = VehicleStateEngine(
             vin,
@@ -285,6 +288,17 @@ class BydCar:
     # MQTT integration
     # ------------------------------------------------------------------
 
+    def _spawn_mqtt_task(self, coro: Coroutine[Any, Any, None]) -> None:
+        """Spawn an MQTT handler task, keeping a strong reference until done."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return
+        task = loop.create_task(coro)
+        self._mqtt_tasks.add(task)
+        task.add_done_callback(self._mqtt_tasks.discard)
+
     def handle_mqtt_realtime(self, data: VehicleRealtimeData) -> None:
         """Handle an MQTT ``vehicleInfo`` push for this vehicle.
 
@@ -292,11 +306,7 @@ class BydCar:
         path as HTTP poll results).  Called synchronously from the event
         loop; spawns an async task for the engine update.
         """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(self._async_handle_mqtt(data))
+        self._spawn_mqtt_task(self._async_handle_mqtt(data))
 
     async def _async_handle_mqtt(self, data: VehicleRealtimeData) -> None:
         """Async handler for MQTT realtime data."""
@@ -311,11 +321,7 @@ class BydCar:
         Parses the payload as :class:`ChargingStatus` and routes it
         through the state engine.
         """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(self._async_handle_mqtt_charging(data))
+        self._spawn_mqtt_task(self._async_handle_mqtt_charging(data))
 
     async def _async_handle_mqtt_charging(self, data: ChargingStatus) -> None:
         """Async handler for MQTT charging data."""
@@ -330,11 +336,7 @@ class BydCar:
         Parses the payload as :class:`EnergyConsumption` and routes it
         through the state engine.
         """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(self._async_handle_mqtt_energy(data))
+        self._spawn_mqtt_task(self._async_handle_mqtt_energy(data))
 
     async def _async_handle_mqtt_energy(self, data: EnergyConsumption) -> None:
         """Async handler for MQTT energy consumption data."""
@@ -387,5 +389,9 @@ class BydCar:
         """Clean up resources.
 
         Called when the car is removed from the client or on shutdown.
-        Currently a no-op — retained as a lifecycle hook for future use.
+        Cancels any in-flight MQTT handler tasks so they don't keep
+        running against a torn-down state engine.
         """
+        for task in tuple(self._mqtt_tasks):
+            task.cancel()
+        self._mqtt_tasks.clear()

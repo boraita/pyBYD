@@ -119,6 +119,14 @@ async def verify_control_password(
     return VerifyControlPasswordResponse.model_validate({"vin": vin, **raw, "raw": raw})
 
 
+def _coerce_int(value: Any) -> int | None:
+    """Best-effort int coercion; the cloud sometimes sends ``""`` or text."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_remote_control_ready(data: dict[str, Any]) -> bool:
     """Check if remote control result has a terminal state.
 
@@ -127,16 +135,17 @@ def _is_remote_control_ready(data: dict[str, Any]) -> bool:
     or when a ``result`` field is present.
 
     ``res=1`` means "command received / in progress" and is **not**
-    terminal — the caller should keep polling.
+    terminal — the caller should keep polling.  Non-numeric values
+    are treated as absent rather than raising out of the poll loop.
     """
     if not data:
         return False
-    control_state = data.get("controlState")
-    if control_state is not None and int(control_state) != 0:
+    control_state = _coerce_int(data.get("controlState"))
+    if control_state is not None and control_state != 0:
         return True
-    res = data.get("res")
+    res = _coerce_int(data.get("res"))
     if res is not None:
-        return int(res) >= 2
+        return res >= 2
     return "result" in data
 
 

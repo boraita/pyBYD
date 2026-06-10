@@ -250,6 +250,17 @@ class BydCar:
         """
         return await self._client.start_charging(self._vin)
 
+    async def stop_charging(self) -> ChargeChangeResult:
+        """Stop charging immediately and wait for the toggle to settle.
+
+        Symmetric to :meth:`start_charging`; routes through the same
+        ``_trigger_and_poll`` pipeline with ``status: "0"``.
+
+        Raises :class:`BydRemoteControlError` if the toggle reports
+        failure or doesn't settle within the polling window.
+        """
+        return await self._client.stop_charging(self._vin)
+
     async def update_energy(self) -> EnergyConsumption:
         """Fetch fresh energy consumption data and merge into state engine."""
         data = await self._client.get_energy_consumption(self._vin)
@@ -359,23 +370,29 @@ class BydCar:
         1. Acquire the per-VIN lock (serialises commands)
         2. Register projections (optimistic state update)
         3. Execute the command
-        4. On ``BydRemoteControlError`` — treat as tentative success
-        5. On other errors — rollback projections and re-raise
+        4. On ANY error (incl. ``BydRemoteControlError`` rejection/timeout) —
+           rollback projections and re-raise so the failure surfaces
 
-        No post-command reconcile poll is performed.  The projections
-        provide immediate optimistic state and the next regular poll
-        cycle (or MQTT push) will reconcile actual vehicle state.
+        The optimistic projection only persists when the command actually
+        succeeded; the next regular poll cycle (or MQTT push) reconciles
+        actual vehicle state.
         """
         async with self._engine.lock:
             command_id = self._engine.register_projections(projections) if projections else ""
             try:
                 await command_fn()
             except BydRemoteControlError:
+                # Command not confirmed (rejected / timeout / car asleep).
+                # Roll back the optimistic state and surface the error instead
+                # of painting a fake "success" that the next poll would undo.
                 _logger.debug(
-                    "BydRemoteControlError treated as tentative success for vin=%s (cmd=%s)",
+                    "Remote control not confirmed for vin=%s (cmd=%s) — " "rolling back projection and raising",
                     self._vin,
                     command_id,
                 )
+                if command_id:
+                    self._engine.rollback_projections(command_id)
+                raise
             except Exception:
                 if command_id:
                     self._engine.rollback_projections(command_id)

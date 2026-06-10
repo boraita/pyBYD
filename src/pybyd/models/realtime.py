@@ -507,6 +507,14 @@ class VehicleRealtimeData(BydBaseModel):
     right_rear_window: WindowState | None = None
     skylight: WindowState | None = None
 
+    # --- Window opening percentage (0-100) ---
+    # Sealion 7 EU reports 0 when closed and 10 after the OPEN_WINDOWS
+    # vent command; full drop reports 100.  Other trims may not populate.
+    left_front_window_pct: int | None = None
+    right_front_window_pct: int | None = None
+    left_rear_window_pct: int | None = None
+    right_rear_window_pct: int | None = None
+
     # --- Tire pressure ---
     left_front_tire_pressure: float | None = None
     right_front_tire_pressure: float | None = None

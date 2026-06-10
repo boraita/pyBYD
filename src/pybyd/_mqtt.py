@@ -147,6 +147,7 @@ class BydMqttRuntime:
         decrypt_key_hex: str,
         on_event: Callable[[MqttEvent], None],
         on_decrypt_error: Callable[[], None] | None = None,
+        on_connected: Callable[[], None] | None = None,
         keepalive: int = 120,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -154,6 +155,7 @@ class BydMqttRuntime:
         self._decrypt_key_hex = decrypt_key_hex
         self._on_event = on_event
         self._on_decrypt_error = on_decrypt_error
+        self._on_connected = on_connected
         self._keepalive = keepalive
         self._logger = logger or logging.getLogger(__name__)
         self._client: mqtt.Client | None = None
@@ -208,6 +210,10 @@ class BydMqttRuntime:
             if self._topic:
                 self._logger.debug("MQTT subscribe topic=%s", self._topic)
                 c.subscribe(self._topic, qos=0)
+            # Notify (on the asyncio loop) that the push channel is up —
+            # fires on first connect and on every paho auto-reconnect.
+            if self._on_connected is not None:
+                self._loop.call_soon_threadsafe(self._on_connected)
 
         def on_message(_c: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> None:
             try:
@@ -274,16 +280,31 @@ class BydMqttRuntime:
         """Stop and disconnect current MQTT client if running."""
         client = self._client
         self._client = None
-        was_running = self._running
         self._running = False
         self._topic = None
 
         if client is None:
             return
         try:
-            if was_running:
-                self._logger.debug("MQTT disconnect requested")
-                client.disconnect()
+            # Request a graceful DISCONNECT unconditionally — even a refused /
+            # never-acked connection can hold a half-open socket.
+            self._logger.debug("MQTT disconnect requested")
+            client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
         finally:
             client.loop_stop()
-            self._logger.debug("MQTT network loop stopped")
+            # paho's disconnect()/loop_stop() do NOT deterministically close
+            # the TLS socket — it is otherwise only reclaimed at GC (__del__).
+            # Under frequent restarts (re-auth on session expiry / token
+            # invalidation, key-refresh) the leaked file descriptors accumulate
+            # and can eventually exhaust the host's FD limit ([Errno 24]),
+            # taking the process down. Force the TLS socket + the loop_start
+            # self-pipe closed right now.
+            with contextlib.suppress(Exception):
+                client._reset_sockets()  # closes _sock (TLS) + socketpair
+            with contextlib.suppress(Exception):
+                sock = client.socket()
+                if sock is not None:
+                    sock.close()
+            self._logger.debug("MQTT network loop stopped (sockets released)")

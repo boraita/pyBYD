@@ -128,6 +128,7 @@ class BydClient:
         on_mqtt_event: Callable[[str, str, dict[str, Any]], None] | None = None,
         on_command_ack: Callable[[CommandAckEvent], None] | None = None,
         on_command_lifecycle: Callable[[CommandLifecycleEvent], None] | None = None,
+        on_mqtt_connect: Callable[[], None] | None = None,
         command_ack_ttl_seconds: float = 300.0,
     ) -> None:
         self._config = config
@@ -147,6 +148,7 @@ class BydClient:
         self._on_mqtt_event_cb = on_mqtt_event
         self._on_command_ack_cb = on_command_ack
         self._on_command_lifecycle_cb = on_command_lifecycle
+        self._on_mqtt_connect_cb = on_mqtt_connect
         self._command_ack_ttl_seconds = command_ack_ttl_seconds if command_ack_ttl_seconds > 0 else 300.0
         self._pending_commands: dict[tuple[str, str], _PendingCommand] = {}
         self._pending_matched_count = 0
@@ -467,6 +469,7 @@ class BydClient:
                 decrypt_key_hex=session.content_key(),
                 on_event=self._on_mqtt_event,
                 on_decrypt_error=self._schedule_mqtt_reauth,
+                on_connected=self._on_mqtt_connect_cb,
                 keepalive=self._config.mqtt_keepalive,
                 logger=_logger,
             )
@@ -1643,6 +1646,78 @@ class BydClient:
             )
 
         return await self._call_with_reauth(_call, retry_if=lambda: not trigger_dispatched)
+
+    async def stop_charging(
+        self,
+        vin: str,
+        *,
+        mqtt_timeout: float | None = None,
+        poll_attempts: int = 6,
+        poll_interval: float = 2.0,
+    ) -> ChargeChangeResult:
+        """Stop charging immediately and wait for the toggle to settle.
+
+        Symmetric to :meth:`start_charging` — gates on the same
+        ``functionNo "1012"`` (``RESERVATIONCHARGING``) and routes through
+        :meth:`_trigger_and_poll`, but triggers
+        ``/control/smartCharge/changeChargeStatue`` with ``status: "0"``.
+
+        Returns the terminal :class:`ChargeChangeResult` (``res == 2``).
+        Raises :class:`BydRemoteControlError` for terminal failures
+        (``res > 2``) or if neither MQTT nor polling produced a terminal
+        result within the polling window.
+        """
+        capabilities = await self.get_vehicle_capabilities(vin)
+        learn_info = await self._vehicle_fun_learn_info_for(vin)
+        gate = evaluate_command_gate(RemoteCommand.STOP_CHARGE, capabilities, learn_info=learn_info)
+        if not gate.supported:
+            raise BydEndpointNotSupportedError(
+                (f"stop_charging blocked for VIN {vin}: " f"gate={gate.gate_id} reason={gate.reason}"),
+                code="command_gate_blocked",
+                endpoint="/control/smartCharge/changeChargeStatue",
+            )
+
+        async def _call() -> ChargeChangeResult:
+            result = await self._trigger_and_poll(
+                vin=vin,
+                trigger_endpoint="/control/smartCharge/changeChargeStatue",
+                poll_endpoint="/control/smartCharge/changeResult",
+                fetch_fn=_smart_api.make_change_charge_fetch_fn(start=False),
+                is_ready=_smart_api.is_charge_change_ready,
+                model_cls=ChargeChangeResult,
+                label="ChargeStop",
+                mqtt_event_type="smartCharge",
+                mqtt_timeout=mqtt_timeout,
+                poll_attempts=poll_attempts,
+                poll_interval=poll_interval,
+            )
+            res = result.res
+            if res == 2:
+                return result
+            if res is None:
+                raise BydRemoteControlError(
+                    "smartCharge change_charge_status timed out without a terminal result",
+                    code="timeout",
+                    endpoint="/control/smartCharge/changeResult",
+                )
+            # res=3 mirrors start_charging: the cloud treats the vehicle as
+            # "already in target state" — here a duplicate stop request or a
+            # vehicle that is not charging.
+            if res == 3:
+                raise BydRemoteControlError(
+                    f"smartCharge change_charge_status rejected by cloud (res=3, "
+                    f"message={result.message!r}) — vehicle is likely already in "
+                    "the target state (not charging, or a duplicate stop request)",
+                    code="3",
+                    endpoint="/control/smartCharge/changeResult",
+                )
+            raise BydRemoteControlError(
+                f"smartCharge change_charge_status unexpected res={res} message={result.message}",
+                code=str(res),
+                endpoint="/control/smartCharge/changeResult",
+            )
+
+        return await self._call_with_reauth(_call)
 
     async def rename_vehicle(self, vin: str, *, name: str) -> CommandAck:
         """Rename a vehicle."""

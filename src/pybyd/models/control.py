@@ -43,13 +43,14 @@ class RemoteCommand(enum.StrEnum):
     BATTERY_HEAT = "BATTERYHEAT"
     OPEN_TRUNK = "OPENTRUNK"
     CLOSE_TRUNK = "CLOSETRUNK"
-    # `START_CHARGE` is a synthetic value (never sent on the wire as a
-    # `commandType`).  The on-the-wire smart-charging "start" toggle goes via
-    # `/control/smartCharge/changeChargeStatue` with ``status: "1"`` rather
-    # than `/control/remoteControl`.  We add the enum member so the gating
-    # table can express the `functionNo` requirement (``1012``) for callers
-    # that introspect command availability.
+    # `START_CHARGE` / `STOP_CHARGE` are synthetic values (never sent on the
+    # wire as a `commandType`).  The on-the-wire smart-charging toggle goes via
+    # `/control/smartCharge/changeChargeStatue` with ``status: "1"`` (start) or
+    # ``status: "0"`` (stop) rather than `/control/remoteControl`.  We add the
+    # enum members so the gating table can express the `functionNo` requirement
+    # (``1012``) for callers that introspect command availability.
     START_CHARGE = "SMARTCHARGESTART"
+    STOP_CHARGE = "SMARTCHARGESTOP"
 
 
 class ControlState(enum.IntEnum):

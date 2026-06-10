@@ -157,6 +157,21 @@ class TestLearnInfoGate:
 class TestEvaluateCommandGatePublicSurface:
     """Top-level ``evaluate_command_gate`` accepts and forwards ``learn_info``."""
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            RemoteCommand.START_CLIMATE,
+            RemoteCommand.STOP_CLIMATE,
+            RemoteCommand.SCHEDULE_CLIMATE,
+        ],
+    )
+    def test_electric_ac_function_no_allows_climate_commands(self, command: RemoteCommand):
+        """Vehicles that advertise Electric A/C as 1015 can use HVAC commands."""
+        verdict = evaluate_command_gate(command, _caps_with(["1015"]))
+        assert verdict.supported is True
+        assert verdict.reason == "supported"
+        assert verdict.matched_function_nos == ["1015"]
+
     def test_open_windows_blocked_when_learn_info_off(self):
         """The shipped OPEN_WINDOWS rule rejects when learn_info=0."""
         verdict = evaluate_command_gate(

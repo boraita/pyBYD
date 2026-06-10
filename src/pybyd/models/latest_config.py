@@ -37,8 +37,8 @@ FEATURE_REGISTRY: tuple[FeatureSpec, ...] = (
     # Direct-control commands.
     FeatureSpec("lock", "Lock doors", ("1005",), "command"),
     FeatureSpec("unlock", "Unlock doors", ("1006",), "command"),
-    FeatureSpec("climate", "Climate (HVAC)", ("1001", "10300001"), "command"),
-    FeatureSpec("car_on", "Car on / one-tap prep", ("1001", "10300001"), "command"),
+    FeatureSpec("climate", "Climate (HVAC)", ("1001", "10300001", "1015"), "command"),
+    FeatureSpec("car_on", "Car on / one-tap prep", ("1001", "10300001", "1015"), "command"),
     FeatureSpec("battery_heat", "Battery heating", ("10300002",), "command"),
     FeatureSpec("steering_wheel_heat", "Steering-wheel heat", ("10030010", "10300004"), "command"),
     FeatureSpec("driver_seat_heat", "Driver seat heat", ("10030002", "10300003"), "command"),

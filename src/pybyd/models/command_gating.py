@@ -77,21 +77,21 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
         {
             "gateId": "climate",
             "command": RemoteCommand.START_CLIMATE,
-            "requiredFunctionNos": ["1001", "10300001"],
+            "requiredFunctionNos": ["1001", "10300001", "1015"],
         }
     ),
     CommandGateRule.model_validate(
         {
             "gateId": "climate",
             "command": RemoteCommand.STOP_CLIMATE,
-            "requiredFunctionNos": ["1001", "10300001"],
+            "requiredFunctionNos": ["1001", "10300001", "1015"],
         }
     ),
     CommandGateRule.model_validate(
         {
             "gateId": "climate_schedule",
             "command": RemoteCommand.SCHEDULE_CLIMATE,
-            "requiredFunctionNos": ["1001", "10300001"],
+            "requiredFunctionNos": ["1001", "10300001", "1015"],
         }
     ),
     CommandGateRule.model_validate(
@@ -180,6 +180,15 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
             # Cars without it can't accept ``/control/smartCharge/*`` calls.
             "gateId": "start_charge",
             "command": RemoteCommand.START_CHARGE,
+            "requiredFunctionNos": ["1012"],
+        }
+    ),
+    CommandGateRule.model_validate(
+        {
+            # Stopping uses the same `RESERVATIONCHARGING` (`1012`) capability
+            # as starting — the changeChargeStatue toggle with ``status: "0"``.
+            "gateId": "stop_charge",
+            "command": RemoteCommand.STOP_CHARGE,
             "requiredFunctionNos": ["1012"],
         }
     ),

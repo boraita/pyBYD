@@ -136,6 +136,9 @@ class BydClient:
         self._codec = BangcleCodec()
         self._transport: SecureTransport | None = None
         self._session: Session | None = None
+        # Serializes login() so concurrent expiry triggers (HTTP reauth,
+        # MQTT reauth) cannot interleave session/MQTT teardown+restart.
+        self._login_lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._mqtt_runtime: BydMqttRuntime | None = None
         self._mqtt_waiters: list[_MqttWaiter] = []
@@ -217,6 +220,11 @@ class BydClient:
 
     async def login(self) -> None:
         """Authenticate against the BYD API and obtain session tokens."""
+        async with self._login_lock:
+            await self._do_login()
+
+    async def _do_login(self) -> None:
+        """Perform the actual login. Caller must hold ``_login_lock``."""
         transport = self._require_transport()
         outer = build_login_request(self._config, _now_ms())
         response = await transport.post_secure("/app/account/login", outer)
@@ -241,7 +249,11 @@ class BydClient:
         """Return an active session, re-authenticating if expired."""
         if self._session is not None and not self._session.is_expired:
             return self._session
-        await self.login()
+        async with self._login_lock:
+            # Re-check: another coroutine may have re-authenticated
+            # while we waited on the lock.
+            if self._session is None or self._session.is_expired:
+                await self._do_login()
         assert self._session is not None  # noqa: S101
         return self._session
 
@@ -391,11 +403,24 @@ class BydClient:
             }
         )
 
-    async def _call_with_reauth(self, fn: Callable[[], Awaitable[T]]) -> T:
-        """Run an API call, retrying once on session expiry."""
+    async def _call_with_reauth(
+        self,
+        fn: Callable[[], Awaitable[T]],
+        *,
+        retry_if: Callable[[], bool] | None = None,
+    ) -> T:
+        """Run an API call, retrying once on session expiry.
+
+        ``retry_if`` lets callers veto the retry: commands with physical
+        side effects pass a predicate that returns ``False`` once their
+        trigger has been dispatched, so a session expiry mid-poll cannot
+        re-send the command.
+        """
         try:
             return await fn()
         except BydSessionExpiredError:
+            if retry_if is not None and not retry_if():
+                raise
             self.invalidate_session()
             await self.ensure_session()
             return await fn()
@@ -765,6 +790,7 @@ class BydClient:
         poll_interval: float = 1.5,
         signal_retries: int = 2,
         validate_context: dict[str, Any] | None = None,
+        on_trigger_dispatched: Callable[[], None] | None = None,
     ) -> _M:
         """Generic trigger → MQTT wait → HTTP poll fallback.
 
@@ -794,6 +820,11 @@ class BydClient:
             transport,
             vin,
         )
+        if on_trigger_dispatched is not None:
+            try:
+                on_trigger_dispatched()
+            except Exception:
+                _logger.debug("on_trigger_dispatched callback failed", exc_info=True)
         merged_latest = trigger_info if isinstance(trigger_info, dict) else {}
 
         if isinstance(trigger_info, dict) and is_ready(trigger_info):
@@ -1243,6 +1274,14 @@ class BydClient:
             raw.setdefault("requestSerial", serial)
             return RemoteControlResult.model_validate(raw)
 
+        trigger_dispatched = False
+
+        def _on_trigger_dispatched(serial: str | None) -> None:
+            nonlocal trigger_dispatched
+            trigger_dispatched = True
+            if serial:
+                self._register_pending_command(vin, serial, command.value)
+
         async def _call() -> RemoteControlResult:
             session = await self.ensure_session()
             transport = self._require_transport()
@@ -1257,12 +1296,10 @@ class BydClient:
                 poll_attempts=poll_attempts,
                 poll_interval=poll_interval,
                 mqtt_result_waiter=_mqtt_result_waiter,
-                on_trigger_dispatched=lambda serial: (
-                    self._register_pending_command(vin, serial, command.value) if serial else None
-                ),
+                on_trigger_dispatched=_on_trigger_dispatched,
             )
 
-        return await self._call_with_reauth(_call)
+        return await self._call_with_reauth(_call, retry_if=lambda: not trigger_dispatched)
 
     async def lock(
         self,
@@ -1473,6 +1510,12 @@ class BydClient:
                 endpoint="/control/smartCharge/saveOrUpdate",
             )
 
+        trigger_dispatched = False
+
+        def _mark_dispatched() -> None:
+            nonlocal trigger_dispatched
+            trigger_dispatched = True
+
         async def _call() -> ChargeChangeResult:
             result = await self._trigger_and_poll(
                 vin=vin,
@@ -1491,6 +1534,7 @@ class BydClient:
                 mqtt_timeout=mqtt_timeout,
                 poll_attempts=poll_attempts,
                 poll_interval=poll_interval,
+                on_trigger_dispatched=_mark_dispatched,
             )
             res = result.res
             if res == 2:
@@ -1507,7 +1551,7 @@ class BydClient:
                 endpoint="/control/smartCharge/changeResult",
             )
 
-        return await self._call_with_reauth(_call)
+        return await self._call_with_reauth(_call, retry_if=lambda: not trigger_dispatched)
 
     async def toggle_smart_charging(self, vin: str, *, enable: bool) -> CommandAck:
         """Enable or disable smart charging."""
@@ -1548,6 +1592,12 @@ class BydClient:
                 endpoint="/control/smartCharge/changeChargeStatue",
             )
 
+        trigger_dispatched = False
+
+        def _mark_dispatched() -> None:
+            nonlocal trigger_dispatched
+            trigger_dispatched = True
+
         async def _call() -> ChargeChangeResult:
             result = await self._trigger_and_poll(
                 vin=vin,
@@ -1561,6 +1611,7 @@ class BydClient:
                 mqtt_timeout=mqtt_timeout,
                 poll_attempts=poll_attempts,
                 poll_interval=poll_interval,
+                on_trigger_dispatched=_mark_dispatched,
             )
             res = result.res
             if res == 2:
@@ -1591,7 +1642,7 @@ class BydClient:
                 endpoint="/control/smartCharge/changeResult",
             )
 
-        return await self._call_with_reauth(_call)
+        return await self._call_with_reauth(_call, retry_if=lambda: not trigger_dispatched)
 
     async def rename_vehicle(self, vin: str, *, name: str) -> CommandAck:
         """Rename a vehicle."""

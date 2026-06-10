@@ -188,6 +188,9 @@ class BydMqttRuntime:
         client.enable_logger(self._logger)
         client.username_pw_set(bootstrap.username, bootstrap.password)
         client.tls_set()
+        # The broker host comes from an API response; keep cert+hostname
+        # verification locked on so a tampered host can't downgrade TLS.
+        client.tls_insecure_set(False)
 
         self._topic = bootstrap.topic
 

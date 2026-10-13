@@ -167,6 +167,10 @@ class BydMqttRuntime:
         # Count of consecutive refused CONNACKs (paho auto-reconnects reuse
         # the same stale credentials forever; this drives client recovery).
         self._consecutive_connack_refusals = 0
+        # Set once a payload decrypts with the current key. After that a
+        # decrypt failure is a payload for another session on the account
+        # (eg another login polling), not a stale key (hass-byd-vehicle#195).
+        self._key_confirmed = False
 
     @property
     def is_running(self) -> bool:
@@ -176,6 +180,7 @@ class BydMqttRuntime:
     def update_decrypt_key(self, key_hex: str) -> None:
         """Update the AES decryption key (thread-safe string assignment)."""
         self._decrypt_key_hex = key_hex
+        self._key_confirmed = False
 
     def start(self, bootstrap: MqttBootstrap) -> None:
         """Connect and subscribe with provided broker details."""
@@ -198,6 +203,7 @@ class BydMqttRuntime:
         client.tls_set()
 
         self._topic = bootstrap.topic
+        self._key_confirmed = False
 
         def on_connect(
             c: mqtt.Client,
@@ -231,6 +237,7 @@ class BydMqttRuntime:
         def on_message(_c: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> None:
             try:
                 parsed, _plaintext = decode_mqtt_payload(msg.payload, self._decrypt_key_hex)
+                self._key_confirmed = True
 
                 event_name = str(parsed.get("event") or "")
                 vin_value = parsed.get("vin")
@@ -251,6 +258,13 @@ class BydMqttRuntime:
                 self._loop.call_soon_threadsafe(self._on_event, event)
             except BydCryptoError:
                 snippet = msg.payload[:64].hex() if msg.payload else "<empty>"
+                if self._key_confirmed:
+                    self._logger.debug(
+                        "MQTT payload not for this session (%d bytes, head=%s), ignoring",
+                        len(msg.payload),
+                        snippet,
+                    )
+                    return
                 self._logger.debug(
                     "MQTT decrypt failed (%d bytes, head=%s) — likely stale key, requesting re-auth",
                     len(msg.payload),

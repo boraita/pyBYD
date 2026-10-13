@@ -144,6 +144,8 @@ class BydClient:
         self._mqtt_runtime: BydMqttRuntime | None = None
         self._mqtt_waiters: list[_MqttWaiter] = []
         self._mqtt_reauth_at: float = 0.0
+        # Decrypt-triggered re-logins since the last decryptable payload.
+        self._mqtt_decrypt_reauths: int = 0
         # CONNACK-refusal recovery state (see _on_mqtt_connack_refused).
         self._mqtt_recovery_attempts: int = 0
         self._mqtt_recovery_last_at: float = 0.0
@@ -475,6 +477,10 @@ class BydClient:
         self._mqtt_waiters.clear()
 
     _MQTT_REAUTH_COOLDOWN_S: float = 60.0
+    # A fresh login derives a fresh key, so if payloads still don't decrypt
+    # after this many re-logins they're encrypted for another session on the
+    # account and logging in again only churns the session (hass-byd-vehicle#195).
+    _MQTT_DECRYPT_REAUTH_MAX: int = 1
 
     # CONNACK-refusal recovery: when the broker refuses our CONNECT (e.g. the
     # shared account's MQTT session was taken over by another login), paho
@@ -491,12 +497,22 @@ class BydClient:
 
         Runs on the asyncio event loop (dispatched via ``call_soon_threadsafe``
         from the paho thread).  Rate-limited to at most once per
-        ``_MQTT_REAUTH_COOLDOWN_S`` seconds to prevent loops.
+        ``_MQTT_REAUTH_COOLDOWN_S`` seconds, and to ``_MQTT_DECRYPT_REAUTH_MAX``
+        re-logins until a payload decrypts again, to prevent loops.
         """
         now = time.monotonic()
         if now - self._mqtt_reauth_at < self._MQTT_REAUTH_COOLDOWN_S:
             return
+        if self._mqtt_decrypt_reauths >= self._MQTT_DECRYPT_REAUTH_MAX:
+            if self._mqtt_decrypt_reauths == self._MQTT_DECRYPT_REAUTH_MAX:
+                _logger.info(
+                    "MQTT decrypt still failing after re-authentication — payloads are likely "
+                    "for another session on this account, not re-authenticating again"
+                )
+                self._mqtt_decrypt_reauths += 1
+            return
         self._mqtt_reauth_at = now
+        self._mqtt_decrypt_reauths += 1
         _logger.info("MQTT decrypt failed — scheduling re-authentication")
         asyncio.ensure_future(self._mqtt_reauth())  # noqa: RUF006
 
@@ -573,6 +589,7 @@ class BydClient:
 
     def _on_mqtt_event(self, event: MqttEvent) -> None:
         """Handle a decrypted MQTT event (called from the MQTT thread via call_soon_threadsafe)."""
+        self._mqtt_decrypt_reauths = 0
         # BYD wraps payloads in data.respondData
         data = event.payload.get("data")
         respond_data_raw = data.get("respondData") if isinstance(data, dict) else event.payload

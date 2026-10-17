@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import functools
 import logging
+import random
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiohttp
 
+from pybyd._api import booking as _booking_api
 from pybyd._api import charging as _charging_api
 from pybyd._api import control as _control_api
 from pybyd._api import energy as _energy_api
@@ -39,6 +41,7 @@ from pybyd.exceptions import (
     BydSessionExpiredError,
 )
 from pybyd.models._base import BydBaseModel
+from pybyd.models.booking import BookingList
 from pybyd.models.charging import ChargingStatus
 from pybyd.models.command_gating import evaluate_command_gate
 from pybyd.models.control import (
@@ -144,6 +147,11 @@ class BydClient:
         self._mqtt_runtime: BydMqttRuntime | None = None
         self._mqtt_waiters: list[_MqttWaiter] = []
         self._mqtt_reauth_at: float = 0.0
+        # Decrypt-triggered re-logins since the last decryptable payload.
+        self._mqtt_decrypt_reauths: int = 0
+        # CONNACK-refusal recovery state (see _on_mqtt_connack_refused).
+        self._mqtt_recovery_attempts: int = 0
+        self._mqtt_recovery_last_at: float = 0.0
         self._on_vehicle_info = on_vehicle_info
         self._on_mqtt_event_cb = on_mqtt_event
         self._on_command_ack_cb = on_command_ack
@@ -469,7 +477,8 @@ class BydClient:
                 decrypt_key_hex=session.content_key(),
                 on_event=self._on_mqtt_event,
                 on_decrypt_error=self._schedule_mqtt_reauth,
-                on_connected=self._on_mqtt_connect_cb,
+                on_connack_refused=self._on_mqtt_connack_refused,
+                on_connected=self._on_mqtt_connected,
                 keepalive=self._config.mqtt_keepalive,
                 logger=_logger,
             )
@@ -493,18 +502,42 @@ class BydClient:
         self._mqtt_waiters.clear()
 
     _MQTT_REAUTH_COOLDOWN_S: float = 60.0
+    # A fresh login derives a fresh key, so if payloads still don't decrypt
+    # after this many re-logins they're encrypted for another session on the
+    # account and logging in again only churns the session (hass-byd-vehicle#195).
+    _MQTT_DECRYPT_REAUTH_MAX: int = 1
+
+    # CONNACK-refusal recovery: when the broker refuses our CONNECT (e.g. the
+    # shared account's MQTT session was taken over by another login), paho
+    # retries the same stale credentials forever. After this many consecutive
+    # refusals, force a re-login to re-derive the session + MQTT password.
+    _MQTT_CONNACK_REFUSAL_THRESHOLD: int = 3
+    _MQTT_RECOVERY_BACKOFF_BASE_S: float = 30.0
+    _MQTT_RECOVERY_BACKOFF_MAX_S: float = 1800.0
+    _MQTT_RECOVERY_BACKOFF_FACTOR: float = 2.0
+    _MQTT_RECOVERY_MAX_ATTEMPTS: int = 6
 
     def _schedule_mqtt_reauth(self) -> None:
         """Schedule a background re-authentication after MQTT decrypt failure.
 
         Runs on the asyncio event loop (dispatched via ``call_soon_threadsafe``
         from the paho thread).  Rate-limited to at most once per
-        ``_MQTT_REAUTH_COOLDOWN_S`` seconds to prevent loops.
+        ``_MQTT_REAUTH_COOLDOWN_S`` seconds, and to ``_MQTT_DECRYPT_REAUTH_MAX``
+        re-logins until a payload decrypts again, to prevent loops.
         """
         now = time.monotonic()
         if now - self._mqtt_reauth_at < self._MQTT_REAUTH_COOLDOWN_S:
             return
+        if self._mqtt_decrypt_reauths >= self._MQTT_DECRYPT_REAUTH_MAX:
+            if self._mqtt_decrypt_reauths == self._MQTT_DECRYPT_REAUTH_MAX:
+                _logger.info(
+                    "MQTT decrypt still failing after re-authentication — payloads are likely "
+                    "for another session on this account, not re-authenticating again"
+                )
+                self._mqtt_decrypt_reauths += 1
+            return
         self._mqtt_reauth_at = now
+        self._mqtt_decrypt_reauths += 1
         _logger.info("MQTT decrypt failed — scheduling re-authentication")
         asyncio.ensure_future(self._mqtt_reauth())  # noqa: RUF006
 
@@ -516,8 +549,72 @@ class BydClient:
         except Exception:
             _logger.debug("MQTT re-auth recovery failed", exc_info=True)
 
+    def _on_mqtt_connected(self) -> None:
+        """Handle a genuine successful CONNACK.
+
+        Resets the CONNACK-refusal recovery counters — only a successful
+        connect proves the (possibly re-derived) credentials were accepted,
+        so this is the only place they reset; a re-login that is immediately
+        refused again still counts toward the ceiling and won't loop fast.
+        Then forwards to the caller-supplied cloud-online callback.
+        """
+        if self._mqtt_recovery_attempts:
+            _logger.info("MQTT connected — recovery state reset")
+        self._mqtt_recovery_attempts = 0
+        self._mqtt_recovery_last_at = 0.0
+        if self._on_mqtt_connect_cb is not None:
+            self._on_mqtt_connect_cb()
+
+    def _on_mqtt_connack_refused(self, consecutive: int) -> None:
+        """Drive recovery when the broker refuses our MQTT CONNECT.
+
+        Runs on the asyncio loop (dispatched from the paho thread). After
+        ``_MQTT_CONNACK_REFUSAL_THRESHOLD`` consecutive refusals, force a
+        re-login (re-derives session + getEmqBrokerIp + fresh MQTT password)
+        to reclaim a session another login on the shared account may have
+        taken. Exponential backoff + jitter avoid a login storm / lock-step
+        ping-pong with a second client; a max-attempts ceiling stops the
+        push channel entirely so paho cannot hammer the broker forever.
+        """
+        if consecutive < self._MQTT_CONNACK_REFUSAL_THRESHOLD:
+            return
+        if self._mqtt_recovery_attempts >= self._MQTT_RECOVERY_MAX_ATTEMPTS:
+            _logger.warning(
+                "MQTT recovery ceiling reached (%d attempts) — stopping push " "channel until the next login()",
+                self._mqtt_recovery_attempts,
+            )
+            self._stop_mqtt()
+            return
+        now = time.monotonic()
+        delay = min(
+            self._MQTT_RECOVERY_BACKOFF_BASE_S * (self._MQTT_RECOVERY_BACKOFF_FACTOR**self._mqtt_recovery_attempts),
+            self._MQTT_RECOVERY_BACKOFF_MAX_S,
+        )
+        delay *= random.uniform(0.8, 1.2)  # jitter: break lock-step ping-pong
+        if now - self._mqtt_recovery_last_at < delay:
+            return  # still inside the backoff window
+        self._mqtt_recovery_last_at = now
+        self._mqtt_recovery_attempts += 1
+        _logger.info(
+            "MQTT CONNACK refused x%d — scheduling re-login (attempt %d/%d)",
+            consecutive,
+            self._mqtt_recovery_attempts,
+            self._MQTT_RECOVERY_MAX_ATTEMPTS,
+        )
+        asyncio.ensure_future(self._mqtt_recover_via_login())  # noqa: RUF006
+
+    async def _mqtt_recover_via_login(self) -> None:
+        """Stop the stale MQTT runtime and re-login to reclaim the session."""
+        try:
+            self._stop_mqtt()  # stop paho resending the stale CONNECT first
+            await self.login()  # re-derives session + broker + restarts MQTT
+            _logger.info("MQTT recovery: re-login done, push channel restarted")
+        except Exception:
+            _logger.warning("MQTT recovery re-login failed", exc_info=True)
+
     def _on_mqtt_event(self, event: MqttEvent) -> None:
         """Handle a decrypted MQTT event (called from the MQTT thread via call_soon_threadsafe)."""
+        self._mqtt_decrypt_reauths = 0
         # BYD wraps payloads in data.respondData
         data = event.payload.get("data")
         respond_data_raw = data.get("respondData") if isinstance(data, dict) else event.payload
@@ -1191,9 +1288,13 @@ class BydClient:
         """Fetch push notification state."""
         return await self._authed_call(_push_api.fetch_push_state, vin)
 
-    async def set_push_state(self, vin: str, *, enable: bool) -> CommandAck:
-        """Enable or disable push notifications."""
-        return await self._authed_call(_push_api.set_push_state, vin, enable=enable)
+    async def set_push_state(self, vin: str, *, enable: bool, push_type: int = 701) -> CommandAck:
+        """Enable/disable a per-type push notification switch.
+
+        Defaults to the vehicle status push (type 701). NOTE: returns
+        code=1001 (not supported) on the Sealion 7 EU.
+        """
+        return await self._authed_call(_push_api.set_push_state, vin, enable=enable, push_type=push_type)
 
     # ------------------------------------------------------------------
     # Control commands
@@ -1655,70 +1756,46 @@ class BydClient:
         poll_attempts: int = 6,
         poll_interval: float = 2.0,
     ) -> ChargeChangeResult:
-        """Stop charging immediately and wait for the toggle to settle.
+        """Not supported: the BYD cloud has no working stop-charge command.
 
-        Symmetric to :meth:`start_charging` — gates on the same
-        ``functionNo "1012"`` (``RESERVATIONCHARGING``) and routes through
-        :meth:`_trigger_and_poll`, but triggers
-        ``/control/smartCharge/changeChargeStatue`` with ``status: "0"``.
+        .. warning::
+           ``/control/smartCharge/changeChargeStatue`` with ``status: "0"``
+           is a **verified no-op** — ``changeResult`` returns
+           ``res: 2 "Operation successful"`` but the vehicle keeps charging
+           (live-tested; see ``references/changeChargeStatue.md``). The BYD
+           app has no in-app stop-charge action either; the only way to stop
+           an active charge is the key-fob / door-handle double-unlock, a
+           physical/CAN path with no cloud equivalent.
 
-        Returns the terminal :class:`ChargeChangeResult` (``res == 2``).
-        Raises :class:`BydRemoteControlError` for terminal failures
-        (``res > 2``) or if neither MQTT nor polling produced a terminal
-        result within the polling window.
+        This method therefore raises immediately instead of issuing the
+        request and reporting a false success. The ``mqtt_timeout`` /
+        ``poll_attempts`` / ``poll_interval`` parameters are retained only
+        to keep the signature symmetric with :meth:`start_charging`.
+
+        Raises
+        ------
+        BydEndpointNotSupportedError
+            Always — the cloud cannot stop an active charge.
         """
-        capabilities = await self.get_vehicle_capabilities(vin)
-        learn_info = await self._vehicle_fun_learn_info_for(vin)
-        gate = evaluate_command_gate(RemoteCommand.STOP_CHARGE, capabilities, learn_info=learn_info)
-        if not gate.supported:
-            raise BydEndpointNotSupportedError(
-                (f"stop_charging blocked for VIN {vin}: " f"gate={gate.gate_id} reason={gate.reason}"),
-                code="command_gate_blocked",
-                endpoint="/control/smartCharge/changeChargeStatue",
-            )
-
-        async def _call() -> ChargeChangeResult:
-            result = await self._trigger_and_poll(
-                vin=vin,
-                trigger_endpoint="/control/smartCharge/changeChargeStatue",
-                poll_endpoint="/control/smartCharge/changeResult",
-                fetch_fn=_smart_api.make_change_charge_fetch_fn(start=False),
-                is_ready=_smart_api.is_charge_change_ready,
-                model_cls=ChargeChangeResult,
-                label="ChargeStop",
-                mqtt_event_type="smartCharge",
-                mqtt_timeout=mqtt_timeout,
-                poll_attempts=poll_attempts,
-                poll_interval=poll_interval,
-            )
-            res = result.res
-            if res == 2:
-                return result
-            if res is None:
-                raise BydRemoteControlError(
-                    "smartCharge change_charge_status timed out without a terminal result",
-                    code="timeout",
-                    endpoint="/control/smartCharge/changeResult",
-                )
-            # res=3 mirrors start_charging: the cloud treats the vehicle as
-            # "already in target state" — here a duplicate stop request or a
-            # vehicle that is not charging.
-            if res == 3:
-                raise BydRemoteControlError(
-                    f"smartCharge change_charge_status rejected by cloud (res=3, "
-                    f"message={result.message!r}) — vehicle is likely already in "
-                    "the target state (not charging, or a duplicate stop request)",
-                    code="3",
-                    endpoint="/control/smartCharge/changeResult",
-                )
-            raise BydRemoteControlError(
-                f"smartCharge change_charge_status unexpected res={res} message={result.message}",
-                code=str(res),
-                endpoint="/control/smartCharge/changeResult",
-            )
-
-        return await self._call_with_reauth(_call)
+        raise BydEndpointNotSupportedError(
+            "stop_charging is not supported: the BYD cloud "
+            "changeChargeStatue status='0' is a verified no-op (returns "
+            "success but does not stop an active charge). Stop an active "
+            "charge with the key-fob/door-handle double-unlock instead. "
+            "See references/changeChargeStatue.md.",
+            code="cloud_stop_unsupported",
+            endpoint="/control/smartCharge/changeChargeStatue",
+        )
 
     async def rename_vehicle(self, vin: str, *, name: str) -> CommandAck:
         """Rename a vehicle."""
         return await self._authed_call(_settings_api.rename_vehicle, vin, name=name)
+
+    async def get_booking_list(self, vin: str) -> BookingList:
+        """Fetch the vehicle's scheduled-climate (``BOOKINGAIR``) timers.
+
+        Note: the endpoint intermittently returns an empty payload even when a
+        booking is set, so an empty ``bookings`` list means "none reported",
+        not a guaranteed "none scheduled".
+        """
+        return await self._authed_call(_booking_api.fetch_booking_list, vin)

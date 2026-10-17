@@ -84,6 +84,10 @@ _PRESERVE_WHEN_NONE_FIELD_NAMES: tuple[str, ...] = (
     "total_consumption_en",
 )
 
+# Suffixes of the per-leg fields parsed from each preserved string; see
+# ``_guard_consumption_legs``.
+_LEG_SUFFIXES: tuple[str, ...] = ("ev", "ev_unit", "fuel", "fuel_unit")
+
 RealtimeFieldFilter = Callable[[str, Any, Any, bool], Any | object]
 """Per-field realtime filter callback.
 
@@ -235,6 +239,36 @@ def _guard_tire_press_unit(
     return _MISSING
 
 
+def _guard_consumption_legs(
+    previous: VehicleRealtimeData,
+    incoming: VehicleRealtimeData,
+) -> dict[str, Any]:
+    """Carry the per-leg split of each preserved consumption string over.
+
+    ``_PRESERVE_WHEN_NONE_FIELD_NAMES`` keeps the legacy strings when an
+    HTTP poll returns ``--``, but the ``<field>_ev`` / ``_ev_unit`` /
+    ``_fuel`` / ``_fuel_unit`` fields parsed from them drop to ``None``.
+    Each group of four is carried over as a whole, and only when all four
+    arrive ``None``: the payload had no number for the field (``--``, a
+    missing key or an unreadable value). The legacy string is then ``None``
+    too, so its own filter keeps it in step.
+
+    Carrying the legs one by one would mix payloads, e.g. a hybrid's fuel
+    leg next to a newer EV-only reading.
+
+    Returns the overrides to apply; empty when nothing needs carrying.
+    """
+    updates: dict[str, Any] = {}
+    for name in _PRESERVE_WHEN_NONE_FIELD_NAMES:
+        legs = [f"{name}_{suffix}" for suffix in _LEG_SUFFIXES]
+        if any(getattr(incoming, leg) is not None for leg in legs):
+            continue
+        carried = {leg: getattr(previous, leg) for leg in legs}
+        if any(value is not None for value in carried.values()):
+            updates.update(carried)
+    return updates
+
+
 def apply_realtime_filters(
     previous: VehicleRealtimeData | None,
     incoming: VehicleRealtimeData,
@@ -245,6 +279,9 @@ def apply_realtime_filters(
     - selected realtime zero-drop gating (doors/locks, SOC/range/tire pressure/odometer).
     - cross-field guard preserving ``tire_press_unit`` when all four
       tire pressures on the incoming payload read zero.
+    - cross-field guard carrying the per-leg split of each preserved
+      consumption string over as a group when the incoming payload has
+      none of it.
 
     The returned model is either:
     - the original incoming payload when no override is needed, or
@@ -255,6 +292,7 @@ def apply_realtime_filters(
     tire_unit_override = _guard_tire_press_unit(baseline, incoming)
     if tire_unit_override is not _MISSING:
         updates["tire_press_unit"] = tire_unit_override
+    updates.update(_guard_consumption_legs(baseline, incoming))
     if updates:
         return incoming.model_copy(update=updates)
     return incoming
@@ -279,30 +317,39 @@ def apply_hvac_filters(
     previous: HvacStatus | None,
     incoming: HvacStatus,
 ) -> HvacStatus:
-    """Drop the all-zero-sensor placeholder HVAC payload.
+    """Drop the all-zero-or-missing placeholder HVAC payload.
 
-    BYD's HVAC HTTP endpoint occasionally returns a payload where every
-    sensor-population field (``temp_in_car``, ``temp_out_car``, ``pm``)
-    reads 0 simultaneously — a placeholder, not real data.  When detected,
-    pin those three fields to their previous values.  Setpoints / state
-    enums on the same payload still update.
+    BYD's HVAC HTTP endpoint has been observed returning a payload where
+    every sensor-population field (``temp_in_car``, ``temp_out_car``,
+    ``pm``) is 0 or missing simultaneously while the vehicle's HVAC
+    block is asleep — a placeholder, not real data.  When detected, all
+    three fields are cleared to ``None`` so the placeholder's literal 0
+    does not surface as a reading: a poll carrying no live sensor data
+    yields no sensor values.  Setpoints / state enums on the same
+    payload still update.
+
+    Previous values are deliberately NOT pinned over the placeholder
+    (unlike the realtime zero-drop family): the quantities here —
+    temperatures, particulates — keep changing while the vehicle
+    sleeps, so a reading pinned across a multi-hour sleep looks live
+    while being hours old.  ``previous`` stays in the signature for the
+    state-engine call site.
 
     A genuine 0 °C reading on one of the sensors round-trips intact as
-    long as the same payload carries any other real sensor value (which
-    real payloads always do).
+    long as the same payload carries any other real sensor value (true
+    of every real capture observed so far).  The trade-off: a payload
+    whose whole triad is genuinely 0-or-missing at once is
+    indistinguishable from the placeholder and resolves to ``None``
+    until the next mixed payload.
     """
-    if previous is None:
-        return incoming
     all_zero_or_missing = all(
         getattr(incoming, field, None) in (None, 0, 0.0) for field in _HVAC_SENSOR_PLACEHOLDER_FIELDS
     )
     if not all_zero_or_missing:
         return incoming
-    updates: dict[str, Any] = {}
-    for field in _HVAC_SENSOR_PLACEHOLDER_FIELDS:
-        prev_value = getattr(previous, field, None)
-        if prev_value is not None:
-            updates[field] = prev_value
+    updates: dict[str, Any] = {
+        field: None for field in _HVAC_SENSOR_PLACEHOLDER_FIELDS if getattr(incoming, field, None) is not None
+    }
     if not updates:
         return incoming
     return incoming.model_copy(update=updates)

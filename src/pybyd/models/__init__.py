@@ -2,6 +2,7 @@
 
 from pybyd._constants import VALID_CLIMATE_DURATIONS, minutes_to_time_span
 from pybyd.models._base import BydBaseModel, BydEnum, BydTimestamp, parse_byd_timestamp
+from pybyd.models.booking import BookingList, ClimateBooking
 from pybyd.models.charging import ChargingStatus
 from pybyd.models.command_gating import CommandGateRule, CommandGateVerdict
 from pybyd.models.control import (
@@ -51,7 +52,9 @@ __all__ = [
     "BydEnum",
     "BydTimestamp",
     "ChargingState",
+    "BookingList",
     "ChargingStatus",
+    "ClimateBooking",
     "CommandGateRule",
     "CommandGateVerdict",
     "ClimateScheduleParams",

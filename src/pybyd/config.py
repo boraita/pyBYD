@@ -79,6 +79,10 @@ class BydConfig(BaseModel):
         T-Box version for vehicle communication.
     is_auto : str
         Auto-login flag.
+    identifier_type : str
+        Login identifier type sent with ``pwdLogin``.  ``"0"`` (default)
+        is email; other values are for accounts registered another way
+        (e.g. phone number).
     control_pin : str or None
         6-digit remote control PIN set in the BYD app. Required for
         vehicle control commands (lock, unlock, climate, etc.).
@@ -113,11 +117,12 @@ class BydConfig(BaseModel):
     country_code: str = "NL"
     language: str = "en"
     time_zone: str = "Europe/Amsterdam"
-    app_version: str = "3.2.2"
-    app_inner_version: str = "322"
+    app_version: str = "3.5.1"
+    app_inner_version: str = "351"
     soft_type: str = "0"
     tbox_version: str = "3"
     is_auto: str = "1"
+    identifier_type: str = "0"
     control_pin: str | None = None
     session_ttl: float = 12 * 3600
     mqtt_enabled: bool = True
@@ -195,6 +200,7 @@ class BydConfig(BaseModel):
             "BYD_SOFT_TYPE": "soft_type",
             "BYD_TBOX_VERSION": "tbox_version",
             "BYD_IS_AUTO": "is_auto",
+            "BYD_IDENTIFIER_TYPE": "identifier_type",
             "BYD_CONTROL_PIN": "control_pin",
         }
         config_kwargs: dict[str, Any] = {"device": device}

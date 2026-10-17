@@ -132,6 +132,7 @@ class BydCar:
             schedule_fn=client.schedule_climate,
             vin=vin,
             execute_command=self._execute_command,
+            get_state=lambda: self._engine.snapshot,
             available=self._capabilities.climate,
         )
         self.seat = SeatCapability(
@@ -251,13 +252,13 @@ class BydCar:
         return await self._client.start_charging(self._vin)
 
     async def stop_charging(self) -> ChargeChangeResult:
-        """Stop charging immediately and wait for the toggle to settle.
+        """Not supported — the BYD cloud cannot stop an active charge.
 
-        Symmetric to :meth:`start_charging`; routes through the same
-        ``_trigger_and_poll`` pipeline with ``status: "0"``.
-
-        Raises :class:`BydRemoteControlError` if the toggle reports
-        failure or doesn't settle within the polling window.
+        Delegates to :meth:`BydClient.stop_charging`, which always raises
+        :class:`BydEndpointNotSupportedError`: the ``changeChargeStatue``
+        ``status: "0"`` path is a verified no-op (reports success without
+        stopping). Stop an active charge with the key-fob/door-handle
+        double-unlock instead.
         """
         return await self._client.stop_charging(self._vin)
 

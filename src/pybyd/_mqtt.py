@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 from pybyd._api._common import build_inner_base, post_token_json
 from pybyd._crypto.aes import aes_decrypt_utf8
 from pybyd._crypto.hashing import md5_hex
+from pybyd._redact import redact_for_log
 from pybyd._transport import SecureTransport
 from pybyd.config import BydConfig
 from pybyd.exceptions import BydCryptoError, BydError
@@ -147,6 +148,7 @@ class BydMqttRuntime:
         decrypt_key_hex: str,
         on_event: Callable[[MqttEvent], None],
         on_decrypt_error: Callable[[], None] | None = None,
+        on_connack_refused: Callable[[int], None] | None = None,
         on_connected: Callable[[], None] | None = None,
         keepalive: int = 120,
         logger: logging.Logger | None = None,
@@ -155,12 +157,20 @@ class BydMqttRuntime:
         self._decrypt_key_hex = decrypt_key_hex
         self._on_event = on_event
         self._on_decrypt_error = on_decrypt_error
+        self._on_connack_refused = on_connack_refused
         self._on_connected = on_connected
         self._keepalive = keepalive
         self._logger = logger or logging.getLogger(__name__)
         self._client: mqtt.Client | None = None
         self._running = False
         self._topic: str | None = None
+        # Count of consecutive refused CONNACKs (paho auto-reconnects reuse
+        # the same stale credentials forever; this drives client recovery).
+        self._consecutive_connack_refusals = 0
+        # Set once a payload decrypts with the current key. After that a
+        # decrypt failure is a payload for another session on the account
+        # (eg another login polling), not a stale key (hass-byd-vehicle#195).
+        self._key_confirmed = False
 
     @property
     def is_running(self) -> bool:
@@ -170,6 +180,7 @@ class BydMqttRuntime:
     def update_decrypt_key(self, key_hex: str) -> None:
         """Update the AES decryption key (thread-safe string assignment)."""
         self._decrypt_key_hex = key_hex
+        self._key_confirmed = False
 
     def start(self, bootstrap: MqttBootstrap) -> None:
         """Connect and subscribe with provided broker details."""
@@ -195,6 +206,7 @@ class BydMqttRuntime:
         client.tls_insecure_set(False)
 
         self._topic = bootstrap.topic
+        self._key_confirmed = False
 
         def on_connect(
             c: mqtt.Client,
@@ -204,8 +216,18 @@ class BydMqttRuntime:
             _properties: Any,
         ) -> None:
             if reason_code.value != 0:
-                self._logger.warning("MQTT connect failed reason=%s", reason_code)
+                self._consecutive_connack_refusals += 1
+                n = self._consecutive_connack_refusals
+                self._logger.warning(
+                    "MQTT connect failed reason=%s (consecutive refusals=%d)",
+                    reason_code,
+                    n,
+                )
+                if self._on_connack_refused is not None:
+                    with contextlib.suppress(RuntimeError):
+                        self._loop.call_soon_threadsafe(self._on_connack_refused, n)
                 return
+            self._consecutive_connack_refusals = 0
             self._logger.debug("MQTT connected reason=%s", reason_code)
             if self._topic:
                 self._logger.debug("MQTT subscribe topic=%s", self._topic)
@@ -217,17 +239,18 @@ class BydMqttRuntime:
 
         def on_message(_c: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> None:
             try:
-                parsed, plaintext = decode_mqtt_payload(msg.payload, self._decrypt_key_hex)
+                parsed, _plaintext = decode_mqtt_payload(msg.payload, self._decrypt_key_hex)
+                self._key_confirmed = True
 
                 event_name = str(parsed.get("event") or "")
                 vin_value = parsed.get("vin")
                 vin = vin_value if isinstance(vin_value, str) and vin_value else None
                 self._logger.debug(
-                    "MQTT decoded topic=%s event=%s vin=%s plaintext=%s",
+                    "MQTT decoded topic=%s event=%s vin=%s payload=%s",
                     msg.topic,
                     event_name,
                     vin,
-                    plaintext,
+                    redact_for_log(parsed),
                 )
                 event = MqttEvent(
                     event=event_name,
@@ -238,6 +261,13 @@ class BydMqttRuntime:
                 self._loop.call_soon_threadsafe(self._on_event, event)
             except BydCryptoError:
                 snippet = msg.payload[:64].hex() if msg.payload else "<empty>"
+                if self._key_confirmed:
+                    self._logger.debug(
+                        "MQTT payload not for this session (%d bytes, head=%s), ignoring",
+                        len(msg.payload),
+                        snippet,
+                    )
+                    return
                 self._logger.debug(
                     "MQTT decrypt failed (%d bytes, head=%s) — likely stale key, requesting re-auth",
                     len(msg.payload),

@@ -24,6 +24,11 @@ from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import HvacStatus, celsius_to_scale
 from pybyd.models.latest_config import LatestConfigFunction, VehicleCapabilities, VehicleLatestConfig
+from pybyd.models.message_center import (
+    NotificationCategory,
+    VehicleMsgItemInfo,
+    VehicleMsgListResponse,
+)
 from pybyd.models.push_notification import PushNotificationState
 from pybyd.models.realtime import (
     AirCirculationMode,
@@ -40,11 +45,12 @@ from pybyd.models.realtime import (
     VehicleState,
     WindowState,
 )
-from pybyd.models.smart_charging import SmartChargingSchedule
+from pybyd.models.smart_charging import AcCurrentLimit, SmartChargingSchedule
 from pybyd.models.token import AuthToken
 from pybyd.models.vehicle import EmpowerRange, EnergyType, Vehicle
 
 __all__ = [
+    "AcCurrentLimit",
     "AirCirculationMode",
     "AuthToken",
     "BatteryHeatParams",
@@ -88,6 +94,9 @@ __all__ = [
     "VehicleCapabilities",
     "Vehicle",
     "VehicleLatestConfig",
+    "NotificationCategory",
+    "VehicleMsgItemInfo",
+    "VehicleMsgListResponse",
     "VehicleRealtimeData",
     "VehicleState",
     "VerifyControlPasswordResponse",

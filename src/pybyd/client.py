@@ -21,6 +21,7 @@ from pybyd._api import energy as _energy_api
 from pybyd._api import gps as _gps_api
 from pybyd._api import hvac as _hvac_api
 from pybyd._api import latest_config as _latest_config_api
+from pybyd._api import message_center as _message_center_api
 from pybyd._api import push_notifications as _push_api
 from pybyd._api import realtime as _realtime_api
 from pybyd._api import smart_charging as _smart_api
@@ -64,9 +65,10 @@ from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import HvacStatus
 from pybyd.models.latest_config import VehicleCapabilities, VehicleLatestConfig
+from pybyd.models.message_center import NotificationCategory, VehicleMsgItemInfo
 from pybyd.models.push_notification import PushNotificationState
 from pybyd.models.realtime import VehicleRealtimeData
-from pybyd.models.smart_charging import SmartChargingSchedule
+from pybyd.models.smart_charging import AcCurrentLimit, SmartChargingSchedule
 from pybyd.models.vehicle import EnergyType, Vehicle
 from pybyd.session import Session
 
@@ -143,6 +145,7 @@ class BydClient:
         # Serializes login() so concurrent expiry triggers (HTTP reauth,
         # MQTT reauth) cannot interleave session/MQTT teardown+restart.
         self._login_lock = asyncio.Lock()
+        self._guest_vins: dict[str, bool] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._mqtt_runtime: BydMqttRuntime | None = None
         self._mqtt_waiters: list[_MqttWaiter] = []
@@ -247,6 +250,9 @@ class BydClient:
             encry_token=token.encry_token,
             ttl=ttl,
         )
+        # What we know about each car's userType outlives the login.
+        self._session.guest_vins.update(self._guest_vins)
+        self._guest_vins = self._session.guest_vins
         # Update the running MQTT runtime's key immediately so any
         # in-flight messages benefit from the new key, then restart
         # the connection with fresh credentials.
@@ -580,7 +586,7 @@ class BydClient:
             return
         if self._mqtt_recovery_attempts >= self._MQTT_RECOVERY_MAX_ATTEMPTS:
             _logger.warning(
-                "MQTT recovery ceiling reached (%d attempts) — stopping push " "channel until the next login()",
+                "MQTT recovery ceiling reached (%d attempts) — stopping push channel until the next login()",
                 self._mqtt_recovery_attempts,
             )
             self._stop_mqtt()
@@ -591,7 +597,9 @@ class BydClient:
             self._MQTT_RECOVERY_BACKOFF_MAX_S,
         )
         delay *= random.uniform(0.8, 1.2)  # jitter: break lock-step ping-pong
-        if now - self._mqtt_recovery_last_at < delay:
+        # 0.0 means no attempt yet; monotonic() can be below the delay
+        # shortly after boot, which would read as inside the window
+        if self._mqtt_recovery_last_at and now - self._mqtt_recovery_last_at < delay:
             return  # still inside the backoff window
         self._mqtt_recovery_last_at = now
         self._mqtt_recovery_attempts += 1
@@ -1015,6 +1023,12 @@ class BydClient:
         """Fetch all vehicles associated with the account."""
         vehicles = await self._authed_call(_vehicle_api.fetch_vehicle_list)
         self._vehicle_metadata_by_vin = {v.vin: v for v in vehicles if v.vin}
+        # A car shared with this account ("Family and friends") must be
+        # addressed with userType=1; the list entry gives the first guess,
+        # and never overrides what the cloud's answers already settled.
+        for v in vehicles:
+            if v.vin:
+                self._guest_vins.setdefault(v.vin, bool(v.empower_id) or v.is_shared)
         return vehicles
 
     async def _energy_type_for(self, vin: str) -> EnergyType:
@@ -1266,6 +1280,20 @@ class BydClient:
         schedule = SmartChargingSchedule.model_validate({"vin": vin, **raw})
         return status, schedule
 
+    async def get_ac_current_limit(
+        self,
+        vin: str,
+        *,
+        energy_type: EnergyType | int | str | None = None,
+    ) -> AcCurrentLimit:
+        """Fetch supported and active AC charging current limits."""
+        resolved_energy_type = await self._energy_type_for(vin) if energy_type is None else energy_type
+        return await self._authed_call(
+            _smart_api.fetch_ac_current_limit,
+            vin,
+            energy_type=resolved_energy_type,
+        )
+
     async def get_energy_consumption(self, vin: str) -> EnergyConsumption:
         """Fetch energy consumption data.
 
@@ -1295,6 +1323,27 @@ class BydClient:
         code=1001 (not supported) on the Sealion 7 EU.
         """
         return await self._authed_call(_push_api.set_push_state, vin, enable=enable, push_type=push_type)
+
+    async def get_notifications(
+        self,
+        category: NotificationCategory = NotificationCategory.VEHICLE,
+    ) -> list[VehicleMsgItemInfo]:
+        """Fetch the account's unread inbox messages of one category.
+
+        The inbox is account-scoped (no VIN); vehicle messages name the car
+        in their ``content``. Whether fetching marks messages as read in the
+        official app is not verified, so callers that poll should keep track
+        of the ``message_id`` values they have already handled.
+        """
+        response = await self._authed_call(_message_center_api.fetch_notifications, category)
+        return response.messages
+
+    async def get_all_notifications(self) -> dict[NotificationCategory, list[VehicleMsgItemInfo]]:
+        """Fetch the account's unread inbox messages of every category."""
+        result: dict[NotificationCategory, list[VehicleMsgItemInfo]] = {}
+        for category in NotificationCategory:
+            result[category] = await self.get_notifications(category)
+        return result
 
     # ------------------------------------------------------------------
     # Control commands
@@ -1609,7 +1658,7 @@ class BydClient:
         gate = evaluate_command_gate(RemoteCommand.START_CHARGE, capabilities, learn_info=learn_info)
         if not gate.supported:
             raise BydEndpointNotSupportedError(
-                (f"save_charging_schedule blocked for VIN {vin}: " f"gate={gate.gate_id} reason={gate.reason}"),
+                (f"save_charging_schedule blocked for VIN {vin}: gate={gate.gate_id} reason={gate.reason}"),
                 code="command_gate_blocked",
                 endpoint="/control/smartCharge/saveOrUpdate",
             )
@@ -1645,12 +1694,12 @@ class BydClient:
                 return result
             if res is None:
                 raise BydRemoteControlError(
-                    ("smartCharge saveOrUpdate timed out without a terminal " "result"),
+                    ("smartCharge saveOrUpdate timed out without a terminal result"),
                     code="timeout",
                     endpoint="/control/smartCharge/changeResult",
                 )
             raise BydRemoteControlError(
-                (f"smartCharge saveOrUpdate rejected by cloud (res={res}, " f"message={result.message!r})"),
+                (f"smartCharge saveOrUpdate rejected by cloud (res={res}, message={result.message!r})"),
                 code=str(res),
                 endpoint="/control/smartCharge/changeResult",
             )
@@ -1691,7 +1740,7 @@ class BydClient:
         gate = evaluate_command_gate(RemoteCommand.START_CHARGE, capabilities, learn_info=learn_info)
         if not gate.supported:
             raise BydEndpointNotSupportedError(
-                (f"start_charging blocked for VIN {vin}: " f"gate={gate.gate_id} reason={gate.reason}"),
+                (f"start_charging blocked for VIN {vin}: gate={gate.gate_id} reason={gate.reason}"),
                 code="command_gate_blocked",
                 endpoint="/control/smartCharge/changeChargeStatue",
             )

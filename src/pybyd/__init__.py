@@ -22,6 +22,7 @@ from pybyd.exceptions import (
 )
 from pybyd.models import (
     VALID_CLIMATE_DURATIONS,
+    AcCurrentLimit,
     ChargingStatus,
     CommandAckEvent,
     CommandLifecycleEvent,
@@ -29,11 +30,14 @@ from pybyd.models import (
     EnergyConsumption,
     GpsInfo,
     HvacStatus,
+    NotificationCategory,
     SeatHeatVentState,
     TirePressureUnit,
     Vehicle,
     VehicleCapabilities,
     VehicleLatestConfig,
+    VehicleMsgItemInfo,
+    VehicleMsgListResponse,
     VehicleRealtimeData,
     WindowState,
     minutes_to_time_span,
@@ -46,6 +50,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "__version__",
+    "AcCurrentLimit",
     "BydApiError",
     "BydAuthenticationError",
     "BydCar",
@@ -76,6 +81,9 @@ __all__ = [
     "VehicleCapabilities",
     "Vehicle",
     "VehicleLatestConfig",
+    "NotificationCategory",
+    "VehicleMsgItemInfo",
+    "VehicleMsgListResponse",
     "VehicleRealtimeData",
     "VehicleSnapshot",
     "WindowState",

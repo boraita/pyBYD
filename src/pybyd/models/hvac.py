@@ -23,9 +23,11 @@ __all__ = [
 
 
 class AcSwitch(BydEnum):
-    """A/C switch state. Relationship to ``HvacOverallStatus`` is unclear."""
+    """A/C compressor switch, separate from the overall ``HvacOverallStatus``."""
 
     UNKNOWN = -1
+    OFF = 1
+    ON = 2
 
 
 class HvacOverallStatus(BydEnum):
@@ -46,7 +48,7 @@ class AirConditioningMode(BydEnum):
 
 
 class HvacWindMode(BydEnum):
-    """Fan mode / airflow direction."""
+    """Airflow direction (which vents blow)."""
 
     UNKNOWN = -1
     OFF = 0
@@ -58,7 +60,7 @@ class HvacWindMode(BydEnum):
 
 
 class HvacWindPosition(BydEnum):
-    """Fan speed / airflow position."""
+    """Fan speed, 1 (lowest) to 7 (highest)."""
 
     UNKNOWN = -1
     OFF = 0
@@ -91,9 +93,9 @@ class HvacStatus(BydBaseModel):
     air_conditioning_mode: AirConditioningMode | None = None
     """A/C mode (auto / manual)."""
     wind_mode: HvacWindMode | None = None
-    """Fan mode / airflow direction."""
+    """Airflow direction."""
     wind_position: HvacWindPosition | None = None
-    """Fan speed / airflow position."""
+    """Fan speed (1-7)."""
     cycle_choice: AirCirculationMode | None = None
     """Air circulation mode (external / internal)."""
 
@@ -159,6 +161,13 @@ class HvacStatus(BydBaseModel):
             return int(self.status) == int(HvacOverallStatus.ON)
         except (TypeError, ValueError):
             return False
+
+    @property
+    def is_compressor_on(self) -> bool | None:
+        """Whether the A/C compressor is on, ``None`` when not reported."""
+        if self.ac_switch is None or self.ac_switch == AcSwitch.UNKNOWN:
+            return None
+        return self.ac_switch == AcSwitch.ON
 
     @property
     def temp_offset(self) -> float:

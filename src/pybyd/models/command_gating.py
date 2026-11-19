@@ -117,18 +117,19 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
     ),
     # Open windows: ``1026`` from cfFixedList is present on cars that
     # support either direction, but only a subset can actually OPEN
-    # remotely (others only support CLOSE).  ``openWindowLearnInfo`` /
-    # ``openWindow499LearnInfo`` on ``vehicleFunLearnInfo`` flip to ``1``
-    # only on the open-capable VINs — confirmed live on a Sealion 7 EU
-    # 2024 where both are ``1`` and OPENWINDOW cracks the windows to
-    # ~10 % vent, vs. jkaberg's car where 1026 is present but the
-    # command had no physical effect (Issue #47).
+    # remotely (others only support CLOSE).  ``openWindowLearnInfo`` on
+    # ``vehicleFunLearnInfo`` is ``1`` only on the open-capable VINs: a
+    # Sealion 7 EU 2024 has it at ``1`` and OPENWINDOW cracks the windows
+    # to ~10 % vent (#47).  ``openWindow499LearnInfo`` alone is not
+    # enough: an ATTO 3 EVO has it at ``1`` with ``openWindowLearnInfo``
+    # at ``0``, and there OPENWINDOW never leaves ``res: 1`` and blocks
+    # the next command with 6024 for a minute or two (#20).
     CommandGateRule.model_validate(
         {
             "gateId": "open_windows",
             "command": RemoteCommand.OPEN_WINDOWS,
             "requiredFunctionNos": ["1026"],
-            "requiredLearnInfoKeys": ["openWindowLearnInfo", "openWindow499LearnInfo"],
+            "requiredLearnInfoKeys": ["openWindowLearnInfo"],
         }
     ),
     CommandGateRule.model_validate(
@@ -161,6 +162,20 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
     ),
     CommandGateRule.model_validate(
         {
+            "gateId": "seat_rear_left",
+            "command": RemoteCommand.SEAT_CLIMATE,
+            "requiredFunctionNos": ["10030006", "10030007"],
+        }
+    ),
+    CommandGateRule.model_validate(
+        {
+            "gateId": "seat_rear_right",
+            "command": RemoteCommand.SEAT_CLIMATE,
+            "requiredFunctionNos": ["10030008", "10030009"],
+        }
+    ),
+    CommandGateRule.model_validate(
+        {
             "gateId": "steering_wheel_heat",
             "command": RemoteCommand.SEAT_CLIMATE,
             "requiredFunctionNos": ["10030010", "10300004"],
@@ -170,7 +185,7 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
         {
             "gateId": "battery_heat",
             "command": RemoteCommand.BATTERY_HEAT,
-            "requiredFunctionNos": ["10300002"],
+            "requiredFunctionNos": ["10300002", "10100001"],
         }
     ),
     CommandGateRule.model_validate(
@@ -198,6 +213,8 @@ _COMMAND_GATE_RULES: tuple[CommandGateRule, ...] = (
 _SEAT_GATE_BY_CHAIR_TYPE: dict[str, str] = {
     "1": "seat_driver",
     "2": "seat_passenger",
+    "3": "seat_rear_left",
+    "4": "seat_rear_right",
     "5": "steering_wheel_heat",
 }
 

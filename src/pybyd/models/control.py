@@ -364,6 +364,9 @@ class ClimateStartParams(ControlParams):
     air_conditioning_mode: int = Field(default=1, ge=0)
     wind_level: int | None = Field(default=None, ge=0)
 
+    air_set: str | None = Field(default=None, exclude=True)
+    """OPENAIR operation: ``None`` = start, ``"14"`` = adjust the setpoint of a running session."""
+
     @model_validator(mode="after")
     def _check_temp_range(self) -> ClimateStartParams:
         for value in (self.temperature, self.copilot_temperature):
@@ -386,9 +389,9 @@ class ClimateStartParams(ControlParams):
         # Mirror driver temp to copilot when copilot was not explicitly set.
         if "copilotSettingTemp" not in data and "mainSettingTemp" in data:
             data["copilotSettingTemp"] = data["mainSettingTemp"]
-        # Immediate mode requires airSet: null in the payload.
+        # Immediate mode always carries airSet (null to start a session).
         if self.remote_mode == 4:
-            data["airSet"] = None
+            data["airSet"] = self.air_set
         return data
 
 
@@ -429,13 +432,13 @@ class SeatClimateParams(ControlParams):
     A value of ``0`` means "not applicable / feature absent".
 
     The ``chair_type`` field indicates which seat/feature the command
-    targets:  ``"1"`` = driver, ``"2"`` = copilot, ``"5"`` = steering
-    wheel.  ``remote_mode`` is always ``1`` for seat/steering commands.
+    targets:  ``"1"`` = driver, ``"2"`` = copilot, ``"3"`` = rear left,
+    ``"4"`` = rear right, ``"5"`` = steering wheel.  ``remote_mode`` is always ``1`` for seat/steering commands.
     """
 
     # --- Target identification ---
     chair_type: str | None = Field(default=None)
-    """Which seat the command targets: "1"=driver, "2"=copilot, "5"=steering wheel."""
+    """Which seat the command targets: "1"=driver, "2"=copilot, "3"=rear left, "4"=rear right, "5"=steering wheel."""
 
     remote_mode: int = Field(default=1, ge=1, le=4)
     """Always ``1`` for seat/steering wheel commands."""
@@ -470,6 +473,10 @@ class SeatClimateParams(ControlParams):
         "main_ventilation": "1",
         "copilot_heat": "2",
         "copilot_ventilation": "2",
+        "lr_seat_heat_state": "3",
+        "lr_seat_ventilation_state": "3",
+        "rr_seat_heat_state": "4",
+        "rr_seat_ventilation_state": "4",
         "steering_wheel_heat_state": "5",
     }
 
@@ -543,7 +550,15 @@ class BatteryHeatParams(ControlParams):
     """Parameters for battery heating (commandType ``BATTERYHEAT``)."""
 
     on: bool = Field(..., serialization_alias="batteryHeatSwitch")
+    heat_type: int = Field(default=2, exclude=True)
 
     @field_serializer("on")
     def _serialize_on(self, value: bool) -> int:
         return 1 if value else 0
+
+    def to_dedicated_control_params_map(self) -> dict[str, Any]:
+        """Return wire params for ``/control/remoteControlBatteryHeat`` (``10100001``)."""
+        return {
+            "batteryHeat": 1 if self.on else 0,
+            "heatType": self.heat_type,
+        }

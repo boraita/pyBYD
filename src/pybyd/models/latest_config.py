@@ -39,7 +39,7 @@ FEATURE_REGISTRY: tuple[FeatureSpec, ...] = (
     FeatureSpec("unlock", "Unlock doors", ("1006",), "command"),
     FeatureSpec("climate", "Climate (HVAC)", ("1001", "10300001", "1015"), "command"),
     FeatureSpec("car_on", "Car on / one-tap prep", ("1001", "10300001", "1015"), "command"),
-    FeatureSpec("battery_heat", "Battery heating", ("10300002",), "command"),
+    FeatureSpec("battery_heat", "Battery heating", ("10300002", "10100001"), "command"),
     FeatureSpec("steering_wheel_heat", "Steering-wheel heat", ("10030010", "10300004"), "command"),
     FeatureSpec("driver_seat_heat", "Driver seat heat", ("10030002", "10300003"), "command"),
     FeatureSpec("driver_seat_ventilation", "Driver seat ventilation", ("10030001", "10300003"), "command"),
@@ -47,6 +47,8 @@ FEATURE_REGISTRY: tuple[FeatureSpec, ...] = (
     FeatureSpec("passenger_seat_ventilation", "Passenger seat ventilation", ("10030004", "10300003"), "command"),
     FeatureSpec("rear_left_seat_heat", "Rear left seat heat", ("10030007",), "command"),
     FeatureSpec("rear_right_seat_heat", "Rear right seat heat", ("10030009",), "command"),
+    FeatureSpec("rear_left_seat_ventilation", "Rear left seat ventilation", ("10030006",), "command"),
+    FeatureSpec("rear_right_seat_ventilation", "Rear right seat ventilation", ("10030008",), "command"),
     FeatureSpec("find_car", "Find car (horn + lights)", ("1007",), "command"),
     FeatureSpec("flash_lights", "Flash lights", ("1008",), "command"),
     FeatureSpec("close_windows", "Close windows", ("1026",), "command"),
@@ -60,7 +62,11 @@ FEATURE_REGISTRY: tuple[FeatureSpec, ...] = (
     # Informational / sensor capabilities.
     FeatureSpec("child_presence_detection", "Child presence detection (CPD)", ("1009",), "sensor"),
     FeatureSpec("digital_key", "Digital key", ("1013",), "metadata"),
+    FeatureSpec("nfc_key", "NFC key", ("10130001",), "metadata"),
     FeatureSpec("nfc_key_3c", "NFC key (3C)", ("10130002",), "metadata"),
+    FeatureSpec("uwb_key", "UWB key", ("10130003",), "metadata"),
+    FeatureSpec("mobile_ota", "Mobile OTA", ("1016",), "metadata"),
+    FeatureSpec("scheduled_departure", "Scheduled departure", ("1029",), "metadata"),
     FeatureSpec("energy_analysis", "Energy analysis", ("1022",), "sensor"),
     FeatureSpec("vehicle_health", "Vehicle health summary", ("1023",), "sensor"),
     FeatureSpec("health_tpms", "Health: tire pressure system", ("10230001",), "sensor"),
@@ -99,6 +105,8 @@ def registered_latest_config_function_nos() -> frozenset[str]:
             "1002",  # door/window (parent)
             "1003",  # ventilation/heating (parent)
             "1004",  # tire pressure (parent)
+            "1010",  # battery heating (parent)
+            "10100001",  # driving battery preheating
             "1014",  # location
             # 1030 = "one-tap prep" (一键备车): the scheduled departure /
             # pre-conditioning flow (BOOKINGAIR under the hood); no separate
@@ -108,12 +116,27 @@ def registered_latest_config_function_nos() -> frozenset[str]:
             # function_no. Confirmed distinct on a live Sealion 7 (issue #161).
             "1030",
             "1031",
+            # names from the app's config mapping (issue #20), not yet seen
+            # gating anything on a live car, so known but not capabilities
+            "1018",  # front defrost
+            "1019",  # electric defrost
+            "1024",  # sentry
+            "1025",  # open windows (open_windows still gates on 1026)
+            "1032",  # energy consumption view
+            "1033",  # front wiper heat
+            "10020006",  # sliding door
+            "10030012",  # seats are on/off only, no levels
+            "10030014",  # third-row left seat ventilation
+            "10030015",  # third-row left seat heat
+            "10030016",  # third-row right seat ventilation
+            "10030017",  # third-row right seat heat
             "10020001",  # sunroof
             "10020002",  # hood
             "10020003",  # trunk
             "10020004",  # up windows remotely
             "10020005",  # windows
             "10030011",  # seat rows
+            "10030013",  # three-speed seats
             "10040001",  # direct tire pressure
         }
     )
@@ -190,6 +213,8 @@ class VehicleCapabilities(BydBaseModel):
     passenger_seat_ventilation: bool | None = None
     rear_left_seat_heat: bool | None = None
     rear_right_seat_heat: bool | None = None
+    rear_left_seat_ventilation: bool | None = None
+    rear_right_seat_ventilation: bool | None = None
 
     find_car: bool | None = None
     flash_lights: bool | None = None
@@ -206,7 +231,11 @@ class VehicleCapabilities(BydBaseModel):
     one_click_shutdown: bool | None = None
     child_presence_detection: bool | None = None
     digital_key: bool | None = None
+    nfc_key: bool | None = None
     nfc_key_3c: bool | None = None
+    uwb_key: bool | None = None
+    mobile_ota: bool | None = None
+    scheduled_departure: bool | None = None
     energy_analysis: bool | None = None
     vehicle_health: bool | None = None
     health_tpms: bool | None = None

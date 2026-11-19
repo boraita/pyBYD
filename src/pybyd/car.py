@@ -38,7 +38,8 @@ from pybyd._capabilities.windows import WindowsCapability
 from pybyd._state_engine import ProjectionSpec, VehicleSnapshot, VehicleStateEngine
 from pybyd.exceptions import BydRemoteControlError
 from pybyd.models.charging import ChargingStatus
-from pybyd.models.control import ChargeChangeResult
+from pybyd.models.command_gating import evaluate_command_gate
+from pybyd.models.control import ChargeChangeResult, RemoteCommand
 from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import HvacStatus
@@ -134,6 +135,7 @@ class BydCar:
             vin=vin,
             execute_command=self._execute_command,
             get_state=lambda: self._engine.snapshot,
+            refresh_fn=self.update_hvac,
             available=self._capabilities.climate,
         )
         self.seat = SeatCapability(
@@ -145,6 +147,10 @@ class BydCar:
             driver_ventilation_available=self._capabilities.driver_seat_ventilation,
             passenger_heat_available=self._capabilities.passenger_seat_heat,
             passenger_ventilation_available=self._capabilities.passenger_seat_ventilation,
+            rear_left_heat_available=self._capabilities.rear_left_seat_heat,
+            rear_left_ventilation_available=self._capabilities.rear_left_seat_ventilation,
+            rear_right_heat_available=self._capabilities.rear_right_seat_heat,
+            rear_right_ventilation_available=self._capabilities.rear_right_seat_ventilation,
         )
         self.steering = SteeringCapability(
             set_seat_climate_fn=client.set_seat_climate,
@@ -173,7 +179,14 @@ class BydCar:
             vin=vin,
             execute_command=self._execute_command,
             close_available=self._capabilities.close_windows,
-            open_available=self._capabilities.open_windows,
+            # the open gate also needs openWindowLearnInfo, which
+            # latest_config doesn't see, so ask the gate directly (#20)
+            open_available=self._capabilities.open_windows
+            and evaluate_command_gate(
+                RemoteCommand.OPEN_WINDOWS,
+                self._capabilities,
+                learn_info=vehicle.vehicle_fun_learn_info or None,
+            ).supported,
         )
         self.trunk = TrunkCapability(
             open_fn=client.open_trunk,

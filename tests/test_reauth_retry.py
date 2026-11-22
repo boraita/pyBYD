@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
+from pybyd._api import standby as standby_api
 from pybyd.client import BydClient
 from pybyd.config import BydConfig
 from pybyd.exceptions import BydError, BydServerTimeError, BydSessionExpiredError, BydTokenRefreshError
+from pybyd.session import Session
 
 
 def _make_client() -> BydClient:
@@ -108,3 +113,30 @@ async def test_call_with_reauth_veto_covers_refresh_and_clock_drift(exc_type: ty
 
     assert attempts == 1
     assert refreshes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc_type", [BydSessionExpiredError, BydTokenRefreshError])
+async def test_run_standby_plan_is_not_re_sent_when_the_result_poll_fails(exc_type: type[BydError]) -> None:
+    """An auth error while polling the result must not trigger the plan a second time."""
+    client = BydClient(BydConfig(username="user@example.com", password="secret", mqtt_enabled=False))
+    client._session = Session(user_id="u1", sign_token="a" * 32, encry_token="b" * 32)  # noqa: SLF001
+    client._transport = MagicMock()  # noqa: SLF001
+    client._refresh_or_relogin = AsyncMock()  # type: ignore[method-assign]  # noqa: SLF001
+    client.login = AsyncMock()  # type: ignore[method-assign]
+    triggers = 0
+
+    async def fake_fetch(endpoint: str, *args: Any, **kwargs: Any) -> tuple[dict[str, Any], str | None]:
+        nonlocal triggers
+        if endpoint == standby_api.SEND_RESULT_ENDPOINT:
+            raise exc_type("boom", code="x", endpoint=endpoint)
+        triggers += 1
+        return {"res": 1}, "serial-1"
+
+    with (
+        patch("pybyd.client._standby_api.make_send_fetch_fn", return_value=fake_fetch),
+        pytest.raises(exc_type),
+    ):
+        await client.run_standby_plan("VIN123", "plan-1", poll_attempts=2, poll_interval=0)
+
+    assert triggers == 1

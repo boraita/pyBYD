@@ -1115,6 +1115,7 @@ class BydClient:
         signal_retries: int = 2,
         validate_context: dict[str, Any] | None = None,
         on_trigger_dispatched: Callable[[], None] | None = None,
+        require_ready: bool = False,
     ) -> _M:
         """Generic trigger → MQTT wait → HTTP poll fallback.
 
@@ -1132,7 +1133,20 @@ class BydClient:
         signal_retries
             Maximum consecutive ``BydDataUnavailableError`` responses before
             giving up early (vehicle likely has no signal). Defaults to 2.
+        require_ready
+            Raise :class:`BydDataUnavailableError` instead of parsing a
+            payload that never passed *is_ready*.
         """
+
+        def _finish(raw: dict[str, Any]) -> _M:
+            if require_ready and not is_ready(raw):
+                raise BydDataUnavailableError(
+                    f"{label} returned no usable data for vin={vin}",
+                    code="not_ready",
+                    endpoint=poll_endpoint,
+                )
+            return model_cls.model_validate(raw, context=validate_context)
+
         session = await self.ensure_session()
         transport = self._require_transport()
 
@@ -1155,7 +1169,7 @@ class BydClient:
             return model_cls.model_validate(merged_latest, context=validate_context)
 
         if not serial:
-            return model_cls.model_validate(merged_latest, context=validate_context)
+            return _finish(merged_latest)
 
         # Register the serial so _on_mqtt_event can distinguish data-poll
         # responses from genuine remote-control command acks.
@@ -1185,7 +1199,7 @@ class BydClient:
                         mqtt_code,
                         vin,
                     )
-                    return model_cls.model_validate(merged_latest, context=validate_context)
+                    return _finish(merged_latest)
 
             # Phase 3: HTTP poll fallback
             _logger.debug("MQTT timeout; falling back to HTTP polling for %s vin=%s", label, vin)
@@ -1232,7 +1246,7 @@ class BydClient:
                     consecutive_unavailable = 0  # reset — different error type
                     _logger.debug("%s poll attempt=%d failed", label, attempt, exc_info=True)
 
-            return model_cls.model_validate(merged_latest, context=validate_context)
+            return _finish(merged_latest)
         finally:
             self._data_poll_serials.discard(trigger_serial)
 
@@ -1453,6 +1467,9 @@ class BydClient:
                 poll_interval=poll_interval,
                 signal_retries=signal_retries,
                 validate_context={"energy_type": energy_type},
+                # a sleeping car answers onlineState=1 with time=0 and every
+                # field zeroed; surfacing that reads as 0% SoC (pyBYD#20)
+                require_ready=True,
             )
 
         return await self._call_with_reauth(_call, probe_busy_session=True)
@@ -2263,6 +2280,12 @@ class BydClient:
         since the app itself stops polling there; other values raise.
         """
 
+        trigger_dispatched = False
+
+        def _mark_dispatched() -> None:
+            nonlocal trigger_dispatched
+            trigger_dispatched = True
+
         async def _call() -> StandbyPlanRunResult:
             result = await self._trigger_and_poll(
                 vin=vin,
@@ -2275,6 +2298,7 @@ class BydClient:
                 mqtt_timeout=0,
                 poll_attempts=poll_attempts,
                 poll_interval=poll_interval,
+                on_trigger_dispatched=_mark_dispatched,
             )
             if result.res is not None and result.res not in (1, 2):
                 raise BydRemoteControlError(
@@ -2284,4 +2308,4 @@ class BydClient:
                 )
             return result.model_copy(update={"vin": vin})
 
-        return await self._call_with_reauth(_call)
+        return await self._call_with_reauth(_call, retry_if=lambda: not trigger_dispatched)

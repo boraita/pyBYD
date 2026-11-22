@@ -6,7 +6,7 @@ import pytest
 
 from pybyd.client import BydClient
 from pybyd.config import BydConfig
-from pybyd.exceptions import BydSessionExpiredError
+from pybyd.exceptions import BydError, BydServerTimeError, BydSessionExpiredError, BydTokenRefreshError
 
 
 def _make_client() -> BydClient:
@@ -83,3 +83,28 @@ async def test_call_with_reauth_retry_if_true_still_retries() -> None:
     result = await client._call_with_reauth(fn, retry_if=lambda: True)  # noqa: SLF001
     assert result == "ok"
     assert attempts == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc_type", [BydTokenRefreshError, BydServerTimeError])
+async def test_call_with_reauth_veto_covers_refresh_and_clock_drift(exc_type: type[BydError]) -> None:
+    """A dispatched command is not re-sent on token refresh or clock-drift errors either."""
+    client = _make_client()
+    refreshes: list[str] = []
+
+    async def fake_refresh() -> None:
+        refreshes.append("refresh")
+
+    client._refresh_or_relogin = fake_refresh  # type: ignore[method-assign]  # noqa: SLF001
+    attempts = 0
+
+    async def fn() -> str:
+        nonlocal attempts
+        attempts += 1
+        raise exc_type("boom", code="x", endpoint="/x")
+
+    with pytest.raises(exc_type):
+        await client._call_with_reauth(fn, retry_if=lambda: False)  # noqa: SLF001
+
+    assert attempts == 1
+    assert refreshes == []

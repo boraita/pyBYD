@@ -31,8 +31,14 @@ class OnlineState(BydEnum):
     """Vehicle online/offline state."""
 
     UNKNOWN = -1
+    OFFLINE = 0
     ONLINE = 1
-    OFFLINE = 2
+
+    @classmethod
+    def _missing_(cls, value: object) -> OnlineState:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return cls.ONLINE
+        return cls.UNKNOWN
 
 
 class ConnectState(BydEnum):
@@ -118,6 +124,7 @@ class PowerGear(BydEnum):
 
     UNKNOWN = -1
     OFF = 1
+    STARTING = 2
     ON = 3
 
 
@@ -179,6 +186,19 @@ _SEAT_STATUS_TO_COMMAND: dict[int, int] = {
     2: 2,  # LOW      -> 2 (low)
     3: 1,  # HIGH     -> 1 (high)
 }
+
+
+class AirRunState(BydEnum):
+    """Whether the A/C is running (``airRunState``).
+
+    Follows the A/C itself, not the circulation mode: it stayed ``OFF``
+    while ``cycleChoice`` switched and went ``ON`` only during a climate
+    run, in step with ``hvac.status`` (#20).
+    """
+
+    UNKNOWN = -1
+    ON = 1
+    OFF = 2
 
 
 class AirCirculationMode(BydEnum):
@@ -503,8 +523,8 @@ class VehicleRealtimeData(BydBaseModel):
     """Driver-side set temperature on BYD scale (1-17)."""
     main_setting_temp_new: float | None = None
     """Driver-side set temperature (deg C, precise)."""
-    air_run_state: AirCirculationMode | None = None
-    """Air circulation mode."""
+    air_run_state: AirRunState | None = None
+    """Whether the A/C is running."""
 
     # --- Seat heating/ventilation ---
     main_seat_heat_state: SeatHeatVentState | None = None
@@ -549,6 +569,7 @@ class VehicleRealtimeData(BydBaseModel):
     left_rear_door: DoorOpenState | None = None
     right_rear_door: DoorOpenState | None = None
     trunk_lid: DoorOpenState | None = None
+    trunk_lid_lower: DoorOpenState | None = None
     sliding_door: DoorOpenState | None = None
     forehold: DoorOpenState | None = None
     """Front trunk / frunk."""
@@ -764,8 +785,8 @@ class VehicleRealtimeData(BydBaseModel):
     """OK/ready indicator. 0=off."""
 
     # --- Features (extended) ---
-    repair_mode_switch: str | None = None
-    """Repair/service mode. '0'=off."""
+    repair_mode_switch: int | str | None = None
+    """Repair/service mode. '0' or 0=off, '1' or 1=on."""
 
     # --- Misc ---
     vehicle_time_zone: str | None = None
@@ -978,7 +999,7 @@ class VehicleRealtimeData(BydBaseModel):
     @property
     def is_online(self) -> bool:
         """Whether the vehicle is reporting as online."""
-        return self.online_state == OnlineState.ONLINE
+        return self.online_state not in (OnlineState.UNKNOWN, OnlineState.OFFLINE)
 
     @property
     def effective_charging_state(self) -> ChargingState:
@@ -1049,6 +1070,7 @@ class VehicleRealtimeData(BydBaseModel):
             self.left_rear_door,
             self.right_rear_door,
             self.trunk_lid,
+            self.trunk_lid_lower,
             self.sliding_door,
             self.forehold,
         ]
@@ -1069,7 +1091,14 @@ class VehicleRealtimeData(BydBaseModel):
     @property
     def is_vehicle_on(self) -> bool:
         """Whether the vehicle is powered on."""
-        return self.power_gear == PowerGear.ON
+        return self.power_gear in (PowerGear.STARTING, PowerGear.ON)
+
+    @property
+    def is_ac_running(self) -> bool | None:
+        """Whether the A/C is running, ``None`` when not reported."""
+        if self.air_run_state in (None, AirRunState.UNKNOWN):
+            return None
+        return self.air_run_state == AirRunState.ON
 
     @property
     def is_battery_heating(self) -> bool | None:

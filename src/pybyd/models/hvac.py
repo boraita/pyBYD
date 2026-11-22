@@ -9,7 +9,7 @@ from pydantic import model_validator
 
 from pybyd._constants import celsius_to_scale, temp_offset_from_range
 from pybyd.models._base import COMMON_KEY_ALIASES, BydBaseModel, BydEnum, is_temp_sentinel
-from pybyd.models.realtime import AirCirculationMode, SeatHeatVentState, StearingWheelHeat
+from pybyd.models.realtime import AirCirculationMode, AirRunState, SeatHeatVentState, StearingWheelHeat
 
 __all__ = [
     "AcSwitch",
@@ -78,6 +78,7 @@ class HvacStatus(BydBaseModel):
 
     _KEY_ALIASES: ClassVar[dict[str, str]] = {
         **COMMON_KEY_ALIASES,
+        "cycleModel": "cycleChoice",
     }
 
     _SENTINEL_RULES: ClassVar[dict[str, Callable[..., bool]]] = {
@@ -98,6 +99,8 @@ class HvacStatus(BydBaseModel):
     """Fan speed (1-7)."""
     cycle_choice: AirCirculationMode | None = None
     """Air circulation mode (external / internal)."""
+    air_run_state: AirRunState | None = None
+    """Whether the A/C is running, same scale as ``status``."""
 
     # --- Temperature ---
     main_setting_temp: float | None = None

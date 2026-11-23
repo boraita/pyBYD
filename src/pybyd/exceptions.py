@@ -57,9 +57,18 @@ class BydSessionExpiredError(BydAuthenticationError):
     """Session token rejected by the server.
 
     Raised when a post-login API call fails with an error code that
-    indicates the token is no longer valid (e.g. ``1005``).  The client
-    catches this internally to trigger automatic re-authentication.
+    indicates the token is no longer valid (e.g. ``1002``, ``1011``).
+    The client catches this internally to trigger automatic
+    re-authentication.
     """
+
+
+class BydTokenRefreshError(BydSessionExpiredError):
+    """Session token needs refresh or re-login (code ``1030``)."""
+
+
+class BydServerTimeError(BydApiError):
+    """Client clock differs from BYD server clock beyond threshold (code ``1003``)."""
 
 
 class BydRemoteControlError(BydApiError):
@@ -82,12 +91,14 @@ class BydControlPasswordError(BydApiError):
 
 
 class BydEndpointNotSupportedError(BydApiError):
-    """Endpoint not supported for this vehicle/region (e.g. code 1001).
+    """Endpoint not supported or not permitted for this vehicle/account (e.g. code 1001, 8002).
 
     Raised when the API returns an error code indicating the requested
     endpoint is not available for the user's vehicle model, region, or
-    firmware version.  Consumers should stop retrying the endpoint for
-    the affected VIN.
+    firmware version, or when a shared guest account lacks permission
+    for the endpoint (for example GPS code ``8002`` or client-side
+    ``guest_permission_denied``).  Consumers should stop retrying the
+    endpoint for the affected VIN.
     """
 
 
@@ -106,6 +117,15 @@ class BydRateLimitError(BydApiError):
 
     This is raised when the server returns code 6024 after exhausting
     all automatic retry attempts.
+    """
+
+
+class BydStandbyScheduleError(BydApiError):
+    """A plan's run time was refused (code 6111).
+
+    A one-off run has to be at least 20 min ahead and within the next
+    30 days.  Daily and weekly runs inside 20 min are saved instead and
+    skip today, see :attr:`pybyd.models.StandbyPlanList.message`.
     """
 
 

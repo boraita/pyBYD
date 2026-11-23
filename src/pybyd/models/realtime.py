@@ -31,8 +31,14 @@ class OnlineState(BydEnum):
     """Vehicle online/offline state."""
 
     UNKNOWN = -1
+    OFFLINE = 0
     ONLINE = 1
-    OFFLINE = 2
+
+    @classmethod
+    def _missing_(cls, value: object) -> OnlineState:
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return cls.ONLINE
+        return cls.UNKNOWN
 
 
 class ConnectState(BydEnum):
@@ -57,6 +63,9 @@ class ChargingState(BydEnum):
     UNKNOWN = -1
     NOT_CHARGING = 0
     CHARGING = 1
+    WAITING_FOR_SCHEDULE = 9
+    # plugged in and waiting for a scheduled start (waitStatus 1); also in
+    # flashChargeState and homePage chargingState (Seal; see issue #20)
     CONNECTED = 15
     # misnamed: 15 is the idle value, reported both unplugged and plugged in
     # but not charging (Sealion 6, Sealion 7, ATTO 3 EVO; see issue #20)
@@ -118,6 +127,7 @@ class PowerGear(BydEnum):
 
     UNKNOWN = -1
     OFF = 1
+    STARTING = 2
     ON = 3
 
 
@@ -179,6 +189,19 @@ _SEAT_STATUS_TO_COMMAND: dict[int, int] = {
     2: 2,  # LOW      -> 2 (low)
     3: 1,  # HIGH     -> 1 (high)
 }
+
+
+class AirRunState(BydEnum):
+    """Whether the A/C is running (``airRunState``).
+
+    Follows the A/C itself, not the circulation mode: it stayed ``OFF``
+    while ``cycleChoice`` switched and went ``ON`` only during a climate
+    run, in step with ``hvac.status`` (#20).
+    """
+
+    UNKNOWN = -1
+    ON = 1
+    OFF = 2
 
 
 class AirCirculationMode(BydEnum):
@@ -503,8 +526,8 @@ class VehicleRealtimeData(BydBaseModel):
     """Driver-side set temperature on BYD scale (1-17)."""
     main_setting_temp_new: float | None = None
     """Driver-side set temperature (deg C, precise)."""
-    air_run_state: AirCirculationMode | None = None
-    """Air circulation mode."""
+    air_run_state: AirRunState | None = None
+    """Whether the A/C is running."""
 
     # --- Seat heating/ventilation ---
     main_seat_heat_state: SeatHeatVentState | None = None
@@ -527,7 +550,9 @@ class VehicleRealtimeData(BydBaseModel):
     charge_state: ChargingState | None = None
     """Authoritative realtime charging state."""
     wait_status: int | None = None
-    """Charge wait status."""
+    """Charge wait status: ``1`` while a scheduled start is still to come
+    (later today or tomorrow), ``0`` inside the window or with no schedule.
+    Seal, see issue #20."""
     full_hour: int | None = None
     """Estimated hours to full charge. Sentinel ``-1`` -> ``None``."""
     full_minute: int | None = None
@@ -542,6 +567,11 @@ class VehicleRealtimeData(BydBaseModel):
     """Scheduled charge start hour."""
     booking_charging_minute: int | None = None
     """Scheduled charge start minute."""
+    charge_start_time_hour: int | None = None
+    """Hours until the next scheduled charge start. Present only while
+    :attr:`wait_status` is ``1``. Seal, see issue #20."""
+    charge_start_time_min: int | None = None
+    """Minutes part of the time until the next scheduled charge start."""
 
     # --- Doors ---
     left_front_door: DoorOpenState | None = None
@@ -549,6 +579,7 @@ class VehicleRealtimeData(BydBaseModel):
     left_rear_door: DoorOpenState | None = None
     right_rear_door: DoorOpenState | None = None
     trunk_lid: DoorOpenState | None = None
+    trunk_lid_lower: DoorOpenState | None = None
     sliding_door: DoorOpenState | None = None
     forehold: DoorOpenState | None = None
     """Front trunk / frunk."""
@@ -598,7 +629,9 @@ class VehicleRealtimeData(BydBaseModel):
     energy counter without live confirmation (none of the fields on
     this endpoint expose absolute lifetime kWh — see the note below)."""
     gl: float | None = None
-    """Instantaneous battery power (W)."""
+    """Instantaneous battery power (W). Positive while charging (into the
+    pack), negative while driving or discharging; opposite sign to
+    :attr:`rate`. Observed on a Seal (MEA), see issue #20."""
     total_energy: str | None = None
     """Lifetime AVERAGE EV consumption rate, kWh/100km (string; "--"
     when unavailable) — despite the name, this is **not** an absolute
@@ -646,7 +679,9 @@ class VehicleRealtimeData(BydBaseModel):
     ect_value: int | None = None
     """Engine coolant temperature (deg C)."""
     pwr: int | None = None
-    """Power warning. 0=normal, >0=warning."""
+    """Unmapped, NOT a warning lamp. Reads ``2`` on healthy cars whether
+    parked, charging or driving (Seal, Sealion 7); ``0`` only in asleep
+    placeholders. See issue #20."""
 
     # --- Feature states ---
     sentry_status: SentryStatus = SentryStatus.UNKNOWN
@@ -761,11 +796,13 @@ class VehicleRealtimeData(BydBaseModel):
     steering_system: int | None = None
     """Steering system warning. 0=normal."""
     ok_light: int | None = None
-    """OK/ready indicator. 0=off."""
+    """Cluster OK (ready to drive) light. 0=off, 1=on. Differs from
+    :attr:`power_gear` while plugged in: a car switched on with the cable
+    in reads ``power_gear`` ON but ``ok_light`` 0 (Seal, issue #20)."""
 
     # --- Features (extended) ---
-    repair_mode_switch: str | None = None
-    """Repair/service mode. '0'=off."""
+    repair_mode_switch: int | str | None = None
+    """Repair/service mode. '0' or 0=off, '1' or 1=on."""
 
     # --- Misc ---
     vehicle_time_zone: str | None = None
@@ -978,7 +1015,7 @@ class VehicleRealtimeData(BydBaseModel):
     @property
     def is_online(self) -> bool:
         """Whether the vehicle is reporting as online."""
-        return self.online_state == OnlineState.ONLINE
+        return self.online_state not in (OnlineState.UNKNOWN, OnlineState.OFFLINE)
 
     @property
     def effective_charging_state(self) -> ChargingState:
@@ -999,13 +1036,24 @@ class VehicleRealtimeData(BydBaseModel):
     def is_charger_connected(self) -> bool | None:
         """Whether the charging gun is connected, as far as realtime can tell.
 
-        ``True`` while charging, otherwise ``None``: ``charge_state`` reads
-        ``15`` both unplugged and plugged in but idle, and ``connect_state``
-        stays ``-1``. Use :attr:`ChargingStatus.is_connected` for plug state.
+        ``True`` while charging or waiting for a scheduled start, otherwise
+        ``None``: ``charge_state`` reads ``15`` both unplugged and plugged in
+        but idle, and ``connect_state`` stays ``-1``. Use
+        :attr:`ChargingStatus.is_connected` for plug state.
         """
-        if self.effective_charging_state == ChargingState.CHARGING:
+        if self.effective_charging_state in (ChargingState.CHARGING, ChargingState.WAITING_FOR_SCHEDULE):
             return True
         return None
+
+    @property
+    def time_to_scheduled_start_minutes(self) -> int | None:
+        """Minutes until the next scheduled charge start.
+
+        ``None`` unless the car reports a pending scheduled start.
+        """
+        if self.charge_start_time_hour is None or self.charge_start_time_min is None:
+            return None
+        return self.charge_start_time_hour * 60 + self.charge_start_time_min
 
     @property
     def time_to_full_minutes(self) -> int | None:
@@ -1049,6 +1097,7 @@ class VehicleRealtimeData(BydBaseModel):
             self.left_rear_door,
             self.right_rear_door,
             self.trunk_lid,
+            self.trunk_lid_lower,
             self.sliding_door,
             self.forehold,
         ]
@@ -1069,7 +1118,14 @@ class VehicleRealtimeData(BydBaseModel):
     @property
     def is_vehicle_on(self) -> bool:
         """Whether the vehicle is powered on."""
-        return self.power_gear == PowerGear.ON
+        return self.power_gear in (PowerGear.STARTING, PowerGear.ON)
+
+    @property
+    def is_ac_running(self) -> bool | None:
+        """Whether the A/C is running, ``None`` when not reported."""
+        if self.air_run_state in (None, AirRunState.UNKNOWN):
+            return None
+        return self.air_run_state == AirRunState.ON
 
     @property
     def is_battery_heating(self) -> bool | None:

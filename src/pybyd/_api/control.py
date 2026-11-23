@@ -22,6 +22,7 @@ from pybyd._api._common import (
     post_token_json,
     post_vehicle_json,
 )
+from pybyd._constants import resolve_poll_delays
 from pybyd._transport import Transport
 from pybyd.config import BydConfig
 from pybyd.exceptions import (
@@ -68,6 +69,7 @@ def _build_control_inner(
     control_params: dict[str, Any] | None = None,
     command_pwd: str | None = None,
     request_serial: str | None = None,
+    include_command_pwd: bool = True,
 ) -> dict[str, Any]:
     """Build the inner payload for remote control endpoints.
 
@@ -80,7 +82,8 @@ def _build_control_inner(
         Optional control password (PIN) sent as ``commandPwd``.
     """
     inner: dict[str, Any] = build_inner_base(config, vin=vin, request_serial=request_serial)
-    inner["commandPwd"] = command_pwd or ""
+    if include_command_pwd:
+        inner["commandPwd"] = command_pwd or ""
     inner["commandType"] = command.value
     if control_params is not None:
         inner["controlParamsMap"] = json.dumps(
@@ -186,6 +189,7 @@ async def _fetch_control_endpoint(
         control_params=control_params,
         command_pwd=command_pwd,
         request_serial=request_serial,
+        include_command_pwd=not endpoint.startswith("/control/remoteControlBatteryHeat"),
     )
 
     # Build extra code map: for remote control endpoints, include service errors.
@@ -225,10 +229,10 @@ async def poll_remote_control(
     control_params: dict[str, Any] | None = None,
     command_pwd: str | None = None,
     poll_attempts: int = 10,
-    poll_interval: float = 1.5,
+    poll_interval: float | None = None,
     rate_limit_retries: int = 3,
     rate_limit_delay: float = 5.0,
-    command_retries: int = 3,
+    command_retries: int = 1,
     command_retry_delay: float = 3.0,
     mqtt_result_waiter: Callable[[str | None], Awaitable[RemoteControlResult | None]] | None = None,
     on_trigger_dispatched: Callable[[str | None], None] | None = None,
@@ -253,16 +257,21 @@ async def poll_remote_control(
         Optional control password (PIN).
     poll_attempts : int
         Maximum number of result poll attempts.
-    poll_interval : float
-        Seconds between poll attempts.
+    poll_interval : float or None
+        Seconds between poll attempts, or ``None`` (default) to use the
+        official 33 s 10-step polling ladder
+        ``[1, 0.5, 0.5, 2, 2, 2, 5, 5, 5, 10]`` s.
     rate_limit_retries : int
         How many times to retry the initial trigger when the server
         returns code 6024 ("previous command still in progress").
     rate_limit_delay : float
         Seconds to wait between rate-limit retries.
     command_retries : int
-        How many times to retry the entire command when it fails
-        (controlState=2).  Set to 1 for no retries.
+        Maximum total attempts for the command when a non-refusal
+        :class:`BydRemoteControlError` occurs (for example polling timeout
+        or cloud service error ``1009``).  Defaults to ``1`` (no replay).
+        Explicit terminal vehicle refusals (``controlState=2`` / ``res=3``,
+        ``code="2"``) are never replayed even when ``command_retries > 1``.
     command_retry_delay : float
         Seconds to wait between command retries.
 
@@ -274,7 +283,8 @@ async def poll_remote_control(
     Raises
     ------
     BydRemoteControlError
-        If the command fails (controlState=2) after all retries.
+        If the vehicle rejects the command (``controlState=2`` / ``res=3``)
+        or the command fails after all retries.
     BydRateLimitError
         If the server keeps returning code 6024 after all retries.
     BydApiError
@@ -300,6 +310,10 @@ async def poll_remote_control(
                 on_trigger_dispatched=on_trigger_dispatched,
             )
         except BydRemoteControlError as exc:
+            if exc.code == "2":
+                # Explicit terminal vehicle refusal (controlState=2 / res=3):
+                # never replay a rejected actuation even if command_retries > 1.
+                raise
             last_exc = exc
             if cmd_attempt < command_retries:
                 _logger.info(
@@ -326,7 +340,7 @@ async def _poll_remote_control_once(
     control_params: dict[str, Any] | None = None,
     command_pwd: str | None = None,
     poll_attempts: int = 10,
-    poll_interval: float = 1.5,
+    poll_interval: float | None = None,
     rate_limit_retries: int = 3,
     rate_limit_delay: float = 5.0,
     mqtt_result_waiter: Callable[[str | None], Awaitable[RemoteControlResult | None]] | None = None,
@@ -413,6 +427,9 @@ async def _poll_remote_control_once(
     if mqtt_result_waiter is not None:
         try:
             mqtt_result = await mqtt_result_waiter(serial)
+        except Exception:
+            _logger.debug("Remote control %s mqtt_wait failed; falling back to polling", command.name, exc_info=True)
+        else:
             if mqtt_result is not None:
                 mqtt_terminal = _is_remote_control_ready(mqtt_result.model_dump(by_alias=True))
                 if not mqtt_terminal:
@@ -428,22 +445,22 @@ async def _poll_remote_control_once(
                         mqtt_result.control_state,
                     )
                     if mqtt_result.control_state == 2:
+                        msg = mqtt_result.raw.get("message") or mqtt_result.raw.get("msg")
+                        detail = f": {msg}" if msg else " (controlState=2)"
                         raise BydRemoteControlError(
-                            f"Remote control {command.name} rejected by vehicle " f"(controlState=2)",
+                            f"Remote control {command.name} rejected by vehicle{detail}",
                             code="2",
                             endpoint=trigger_endpoint,
                         )
                     return mqtt_result
             _logger.debug("Remote control %s mqtt_wait returned no result; falling back to polling", command.name)
-        except Exception:
-            _logger.debug("Remote control %s mqtt_wait failed; falling back to polling", command.name, exc_info=True)
 
     # Phase 2: Poll for results
     latest = result
     reached_terminal = False
-    for attempt in range(1, poll_attempts + 1):
-        if poll_interval > 0:
-            await asyncio.sleep(poll_interval)
+    for attempt, delay in enumerate(resolve_poll_delays(poll_attempts, poll_interval), start=1):
+        if delay > 0:
+            await asyncio.sleep(delay)
 
         try:
             latest, serial = await _fetch_control_endpoint(

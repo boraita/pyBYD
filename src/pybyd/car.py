@@ -44,6 +44,7 @@ from pybyd.models.energy import EnergyConsumption
 from pybyd.models.gps import GpsInfo
 from pybyd.models.hvac import HvacStatus
 from pybyd.models.latest_config import VehicleCapabilities
+from pybyd.models.ota import OtaUpgradeInfo
 from pybyd.models.realtime import VehicleRealtimeData
 from pybyd.models.smart_charging import AcCurrentLimit
 from pybyd.models.vehicle import Vehicle
@@ -99,7 +100,7 @@ class BydCar:
             on_state_changed=on_state_changed,
             projection_ttl=projection_ttl,
         )
-        self._capabilities = capabilities or VehicleCapabilities.model_validate(
+        base_capabilities = capabilities or VehicleCapabilities.model_validate(
             {
                 "vin": vin,
                 "source": "implicit_default",
@@ -118,6 +119,11 @@ class BydCar:
                 "close_windows": True,
                 "location": True,
             }
+        )
+        guest_perms = vehicle.granted_permission_codes if vehicle.is_shared else None
+        self._capabilities = base_capabilities.with_guest_permissions(
+            is_shared=vehicle.is_shared,
+            granted_codes=guest_perms,
         )
 
         # --- Capability namespaces ---
@@ -186,6 +192,8 @@ class BydCar:
                 RemoteCommand.OPEN_WINDOWS,
                 self._capabilities,
                 learn_info=vehicle.vehicle_fun_learn_info or None,
+                is_shared=vehicle.is_shared,
+                guest_permissions=guest_perms,
             ).supported,
         )
         self.trunk = TrunkCapability(
@@ -314,6 +322,25 @@ class BydCar:
         await self.update_charging()
         return result
 
+    async def get_ota_version(self) -> OtaUpgradeInfo:
+        """Fetch OTA firmware version and night auto-upgrade settings for this vehicle."""
+        return await self._client.get_ota_version(self._vin)
+
+    async def set_ota_auto_upgrade(
+        self,
+        *,
+        enabled: bool,
+        auto_upgrade_time: str = "2:00",
+        command_pwd: str | None = None,
+    ) -> None:
+        """Update night automatic OTA upgrade settings for this vehicle."""
+        await self._client.set_ota_auto_upgrade(
+            self._vin,
+            enabled=enabled,
+            auto_upgrade_time=auto_upgrade_time,
+            command_pwd=command_pwd,
+        )
+
     # ------------------------------------------------------------------
     # MQTT integration
     # ------------------------------------------------------------------
@@ -344,6 +371,33 @@ class BydCar:
             await self._engine.update_realtime(data)
         except Exception:
             _logger.debug("Failed to process MQTT realtime for vin=%s", self._vin, exc_info=True)
+
+    def handle_mqtt_status_push(
+        self,
+        data: VehicleRealtimeData,
+        *,
+        hvac: HvacStatus | None = None,
+        charging: ChargingStatus | None = None,
+    ) -> None:
+        """Handle a partial MQTT ``vehicleStatusPush`` update for this vehicle."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._async_handle_mqtt_status_push(data, hvac=hvac, charging=charging))
+
+    async def _async_handle_mqtt_status_push(
+        self,
+        data: VehicleRealtimeData,
+        *,
+        hvac: HvacStatus | None = None,
+        charging: ChargingStatus | None = None,
+    ) -> None:
+        """Async handler for partial MQTT ``vehicleStatusPush`` updates."""
+        try:
+            await self._engine.patch_status_push(realtime=data, hvac=hvac, charging=charging)
+        except Exception:
+            _logger.debug("Failed to process MQTT vehicleStatusPush for vin=%s", self._vin, exc_info=True)
 
     def handle_mqtt_charging(self, data: ChargingStatus) -> None:
         """Handle an MQTT ``smartCharge`` push for this vehicle.

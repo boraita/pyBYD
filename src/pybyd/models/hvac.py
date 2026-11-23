@@ -9,7 +9,7 @@ from pydantic import model_validator
 
 from pybyd._constants import celsius_to_scale, temp_offset_from_range
 from pybyd.models._base import COMMON_KEY_ALIASES, BydBaseModel, BydEnum, is_temp_sentinel
-from pybyd.models.realtime import AirCirculationMode, SeatHeatVentState, StearingWheelHeat
+from pybyd.models.realtime import AirCirculationMode, AirRunState, SeatHeatVentState, StearingWheelHeat
 
 __all__ = [
     "AcSwitch",
@@ -23,7 +23,8 @@ __all__ = [
 
 
 class AcSwitch(BydEnum):
-    """A/C compressor switch, separate from the overall ``HvacOverallStatus``."""
+    """A/C button setting (ON = A/C, OFF = fan only), separate from the
+    overall ``HvacOverallStatus``. Remembered while the climate is off."""
 
     UNKNOWN = -1
     OFF = 1
@@ -78,6 +79,7 @@ class HvacStatus(BydBaseModel):
 
     _KEY_ALIASES: ClassVar[dict[str, str]] = {
         **COMMON_KEY_ALIASES,
+        "cycleModel": "cycleChoice",
     }
 
     _SENTINEL_RULES: ClassVar[dict[str, Callable[..., bool]]] = {
@@ -87,7 +89,9 @@ class HvacStatus(BydBaseModel):
 
     # --- A/C state ---
     ac_switch: AcSwitch | None = None
-    """A/C switch state."""
+    """A/C button setting, not whether the climate runs: on the Seal it
+    stays ``ON`` with the climate off and reads ``OFF`` in fan-only mode
+    (issue #20). Use :attr:`status` / :attr:`air_run_state` for running."""
     status: HvacOverallStatus | None = None
     """Overall HVAC status."""
     air_conditioning_mode: AirConditioningMode | None = None
@@ -98,6 +102,8 @@ class HvacStatus(BydBaseModel):
     """Fan speed (1-7)."""
     cycle_choice: AirCirculationMode | None = None
     """Air circulation mode (external / internal)."""
+    air_run_state: AirRunState | None = None
+    """Whether the A/C is running, same scale as ``status``."""
 
     # --- Temperature ---
     main_setting_temp: float | None = None
@@ -164,7 +170,11 @@ class HvacStatus(BydBaseModel):
 
     @property
     def is_compressor_on(self) -> bool | None:
-        """Whether the A/C compressor is on, ``None`` when not reported."""
+        """Whether the A/C button is on, ``None`` when not reported.
+
+        This is the setting, kept while the climate is off; pair it with
+        :attr:`is_ac_on` to know if the compressor may actually run.
+        """
         if self.ac_switch is None or self.ac_switch == AcSwitch.UNKNOWN:
             return None
         return self.ac_switch == AcSwitch.ON
